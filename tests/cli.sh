@@ -16,6 +16,7 @@ for t in burn cleanlinux-boot sfdisk mkfs.vfat mkfs.btrfs useradd udevadm; do
 	chmod 755 "$tmp/bin/$t"
 done
 # this computer, as burn profile detect sees it (a query: a dry run may ask it)
+# shellcheck disable=SC2016 # the stub's own $1 $2 $*, expanded when it runs
 printf '#!/bin/sh\nif [ "$1 $2" = "profile detect" ]; then printf "arch       x86_64\\nprofile    steam-deck\\n"; exit 0; fi\necho "burn $*" >>"%s/ran"\n' \
 	"$tmp" >"$tmp/bin/burn"
 ci() { env PATH="$tmp/bin:$PATH" "$BIN" "$@"; }
