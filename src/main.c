@@ -287,6 +287,45 @@ static void clone_system(void)
 	globfree(&g);
 }
 
+/* burn profile detect: the device profile of this computer, when it is not the one the running
+ * system (the live image: generic) builds for; asked on a terminal, else only shown */
+static void suggest_profile(void)
+{
+	if (o.profile)
+		return;
+	char *const argv[] = {"burn", "profile", "detect", NULL};
+	char *out = run_output(argv);
+	char *det = detected_profile(out);
+	free(out);
+	if (!det)
+		return;
+	char *conf = read_file("/etc/burn/burn.conf", NULL);
+	char *cur = conf ? conf_get(conf, "PROFILE") : NULL;
+	free(conf);
+	if (!cur || !*cur) {
+		free(cur);
+		cur = xstrdup("native"); /* burn's default */
+	}
+	if (strcmp(det, cur)) {
+		msg("Hardware");
+		info("burn profile detect: %s (the running system builds for %s)", det, cur);
+		if (!o.yes && !o.dry_run && isatty(0)) {
+			char *q = xasprintf("Use the profile %s for the new system (burn update then rebuilds it for this "
+					    "computer)? Type yes:",
+					    det);
+			if (ask_yes(q)) {
+				o.profile = det;
+				det = NULL;
+			}
+			free(q);
+		} else {
+			info("--profile %s makes it the profile of the new system", det);
+		}
+	}
+	free(det);
+	free(cur);
+}
+
 static void write_config(const fsents *fstab)
 {
 	msg("Configuring the new system");
@@ -561,6 +600,7 @@ int main(int argc, char **argv)
 		if (!(esp = find_esp()))
 			die("no EFI system partition (vfat) mounted at %s/boot, %s/efi or %s/boot/efi", o.target, o.target, o.target);
 	}
+	suggest_profile();
 	msg("The new system");
 	info("hostname %s, %s%s", o.hostname, o.user ? "user " : "only root", o.user ? o.user : "");
 	if (o.packages.n) {

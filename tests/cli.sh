@@ -15,6 +15,9 @@ for t in burn cleanlinux-boot sfdisk mkfs.vfat mkfs.btrfs useradd udevadm; do
 	printf '#!/bin/sh\necho "%s $*" >>"%s/ran"\n' "$t" "$tmp" >"$tmp/bin/$t"
 	chmod 755 "$tmp/bin/$t"
 done
+# this computer, as burn profile detect sees it (a query: a dry run may ask it)
+printf '#!/bin/sh\nif [ "$1 $2" = "profile detect" ]; then printf "arch       x86_64\\nprofile    steam-deck\\n"; exit 0; fi\necho "burn $*" >>"%s/ran"\n' \
+	"$tmp" >"$tmp/bin/burn"
 ci() { env PATH="$tmp/bin:$PATH" "$BIN" "$@"; }
 
 "$BIN" --version | grep -q '^cleanlinux-install ' || fail "--version"
@@ -59,7 +62,8 @@ if [ -n "$disk" ]; then
 		"burn -r $tmp/target -y clone / base linux" 'rootflags=subvol=@ rootwait ro console=ttyS0' \
 		'subvol=@home,compress=zstd:1,noatime 0 0' 'umask=0077,noatime 0 2' 'tmpfs /tmp tmpfs nosuid,nodev 0 0' \
 		"useradd -R $tmp/target -m -U -G wheel -s /bin/bash anna" "cleanlinux-boot --root $tmp/target kernel sync" \
-		'Dry run: nothing was changed'; do
+		'burn profile detect: steam-deck (the running system builds for ' \
+		'--profile steam-deck makes it the profile of the new system' 'Dry run: nothing was changed'; do
 		grep -qF -- "$want" "$tmp/out" || fail "dry run: no '$want' in: $(cat "$tmp/out")"
 	done
 	[ ! -e "$tmp/ran" ] || fail "dry run ran: $(cat "$tmp/ran")"

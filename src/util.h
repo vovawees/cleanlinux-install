@@ -65,7 +65,9 @@ void random_bytes(void *buf, size_t n);
 /* run a program (found in PATH) and wait: its exit status, 128+signal, or -1 when it could not
  * run; INPUT, when not NULL, is written to its standard input */
 int run(char *const argv[], const char *input);
-int runl(const char *input, const char *prog_name, ...); /* NULL-terminated arguments */
+int runl(const char *input, const char *prog_name, ...);
+/* the standard output of a program (stdin and stderr: /dev/null); NULL unless it exits with 0 */
+char *run_output(char *const argv[]); /* NULL-terminated arguments */
 /* the program in PATH, or NULL */
 char *find_program(const char *name);
 /* "a b 'c d'": a command line for messages */

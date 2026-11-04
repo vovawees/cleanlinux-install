@@ -468,6 +468,58 @@ int run(char *const argv[], const char *input)
 	return 128 + WTERMSIG(st);
 }
 
+char *run_output(char *const argv[])
+{
+	char *path = find_program(argv[0]);
+	int pfd[2];
+	if (!path || pipe2(pfd, O_CLOEXEC) < 0) {
+		free(path);
+		return NULL;
+	}
+	fflush(stdout);
+	fflush(stderr);
+	pid_t pid = fork();
+	if (pid < 0) {
+		free(path);
+		close(pfd[0]);
+		close(pfd[1]);
+		return NULL;
+	}
+	if (pid == 0) {
+		int null = open("/dev/null", O_RDWR);
+		dup2(pfd[1], 1);
+		if (null >= 0) {
+			dup2(null, 0);
+			dup2(null, 2);
+		}
+		execv(path, argv);
+		_exit(127);
+	}
+	free(path);
+	close(pfd[1]);
+	sbuf b = SBUF_INIT;
+	char buf[4096];
+	for (;;) {
+		ssize_t n = read(pfd[0], buf, sizeof buf);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		sb_addn(&b, buf, (size_t)n);
+	}
+	close(pfd[0]);
+	int st;
+	while (waitpid(pid, &st, 0) < 0)
+		if (errno != EINTR)
+			break;
+	char *out = sb_take(&b);
+	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+		free(out);
+		return NULL;
+	}
+	return out;
+}
+
 int runl(const char *input, const char *prog_name, ...)
 {
 	strv a = STRV_INIT;

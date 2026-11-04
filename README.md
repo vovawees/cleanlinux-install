@@ -34,19 +34,23 @@ cleanlinux-install --target /mnt                     # своя разметка
 1. Проверяет диск: целый диск, а не раздел; не только для чтения; не занят — ядро не даёт эксклюзивно
    открыть диск, если раздел смонтирован, это swap или его держит device mapper, так что диск живой системы
    не выбрать по ошибке.
-2. Спрашивает подтверждение (`--yes` — без него) и пароли — до того, как что-то изменится.
-3. Размечает (`sfdisk`, свои случайные PARTUUID), форматирует (`mkfs.vfat`, `mkfs.btrfs`), создаёт подтома
+2. Предлагает профиль железа: `burn profile detect` узнаёт устройство (DMI, device tree), и если это не тот профиль,
+   под который собрана живая система (образ — `generic-x86_64`), спрашивает, взять ли его для новой системы
+   (`burn update` потом пересоберёт её под это устройство); без терминала или с `--yes` только показывает
+   подсказку, `--profile` выбирает сам.
+3. Спрашивает подтверждение (`--yes` — без него) и пароли — до того, как что-то изменится.
+4. Размечает (`sfdisk`, свои случайные PARTUUID), форматирует (`mkfs.vfat`, `mkfs.btrfs`), создаёт подтома
    ioctl-ом btrfs и монтирует новую систему в `--target`.
-4. Пишет `/etc/kernel/cmdline` (`root=PARTUUID=… rootflags=subvol=@ rootwait ro` + `--cmdline`) — до пакетов,
+5. Пишет `/etc/kernel/cmdline` (`root=PARTUUID=… rootflags=subvol=@ rootwait ro` + `--cmdline`) — до пакетов,
    чтобы триггер ядра сразу написал верную запись загрузчика.
-5. `burn -r /mnt -y clone /`: все пакеты живой системы (или `--packages` с зависимостями) из
+6. `burn -r /mnt -y clone /`: все пакеты живой системы (или `--packages` с зависимостями) из
    `/var/cache/burn/packages`, в порядке зависимостей, с триггерами (ldconfig, depmod, hwdb, sysusers, ядро в ESP).
-6. Настраивает: `fstab` по PARTUUID, `hostname`, `burn.conf` живой системы (профиль — `--profile`), пароль root
+7. Настраивает: `fstab` по PARTUUID, `hostname`, `burn.conf` живой системы (профиль — `--profile`), пароль root
    и пользователь в группе `wheel` (`useradd -R`, хэш yescrypt из libxcrypt), сервисы dinit: `dhcpcd`, а при Wi-Fi —
    `iwd` и известные живой системе сети.
-7. `cleanlinux-boot --root /mnt kernel sync`: ядро и systemd-boot в ESP, затем запись `CleanLinux` в NVRAM
+8. `cleanlinux-boot --root /mnt kernel sync`: ядро и systemd-boot в ESP, затем запись `CleanLinux` в NVRAM
    (efivarfs, первой в `BootOrder`); без неё прошивка всё равно найдёт `EFI/BOOT/BOOTX64.EFI`.
-8. Отмонтирует (`--keep-mounted` — оставить).
+9. Отмонтирует (`--keep-mounted` — оставить).
 
 Пароли берутся с терминала или из файла (`--root-password-file`, `--user-password-file`, `-` — stdin):
 так установку можно автоматизировать. LUKS и LVM пока не поддерживаются — им нужен initramfs.

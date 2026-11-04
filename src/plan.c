@@ -417,6 +417,57 @@ char *conf_set(const char *text, const char *key, const char *value)
 	return sb_take(&b);
 }
 
+char *conf_get(const char *text, const char *key)
+{
+	char *val = NULL;
+	size_t kl = strlen(key);
+	for (const char *p = text; p && *p;) {
+		size_t len = strcspn(p, "\n");
+		const char *s = p;
+		while (s < p + len && (*s == ' ' || *s == '\t'))
+			s++;
+		if ((size_t)(p + len - s) > kl && !strncmp(s, key, kl) && s[kl] == '=') {
+			const char *v = s + kl + 1, *end = p + len;
+			/* a comment after the value, then the quotes */
+			const char *hash = v;
+			while (hash < end && *hash != '#')
+				hash++;
+			end = hash;
+			while (end > v && (end[-1] == ' ' || end[-1] == '\t'))
+				end--;
+			if (end - v >= 2 && (*v == '"' || *v == '\'') && end[-1] == *v) {
+				v++;
+				end--;
+			}
+			free(val);
+			val = xstrndup(v, (size_t)(end - v));
+		}
+		p += len;
+		if (*p == '\n')
+			p++;
+	}
+	return val;
+}
+
+char *detected_profile(const char *out)
+{
+	for (const char *p = out; p && *p;) {
+		size_t len = strcspn(p, "\n");
+		if (len > 7 && !strncmp(p, "profile", 7) && (p[7] == ' ' || p[7] == '\t')) {
+			const char *v = p + 7, *end = p + len;
+			while (v < end && (*v == ' ' || *v == '\t'))
+				v++;
+			while (end > v && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r'))
+				end--;
+			return v < end ? xstrndup(v, (size_t)(end - v)) : NULL;
+		}
+		p += len;
+		if (*p == '\n')
+			p++;
+	}
+	return NULL;
+}
+
 char *cmdline_text(const char *root_partuuid, const char *rootflags, const char *extra)
 {
 	sbuf b = SBUF_INIT;

@@ -45,6 +45,10 @@ size_t efi_load_option(uint8_t *buf, size_t cap, const char *desc, uint32_t part
 char *shadow_set(const char *text, const char *user, const char *hash, long days);
 /* KEY=value set in a shell-style configuration text (replaced or appended) */
 char *conf_set(const char *text, const char *key, const char *value);
+/* the value of KEY in such a text (the last assignment, without quotes); NULL when unset */
+char *conf_get(const char *text, const char *key);
+/* the profile line of `burn profile detect`; NULL without one */
+char *detected_profile(const char *out);
 /* the kernel command line of the new system */
 char *cmdline_text(const char *root_partuuid, const char *rootflags, const char *extra);
 bool valid_hostname(const char *s);

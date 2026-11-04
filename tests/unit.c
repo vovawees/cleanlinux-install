@@ -23,9 +23,10 @@ static int checks, failed;
 static void check_str(const char *what, char *got, const char *want)
 {
 	checks++;
-	if (strcmp(got, want)) {
+	if (got && want ? strcmp(got, want) != 0 : got != want) {
 		failed++;
-		fprintf(stderr, "FAIL %s:\n--- got\n%s\n--- want\n%s\n", what, got, want);
+		fprintf(stderr, "FAIL %s:\n--- got\n%s\n--- want\n%s\n", what, got ? got : "(null)",
+			want ? want : "(null)");
 	}
 	free(got);
 }
@@ -145,6 +146,12 @@ int main(void)
 	check_str("conf append", conf_set("JOBS=4\n", "PROFILE", "generic-x86_64"), "JOBS=4\nPROFILE=generic-x86_64\n");
 	check_str("conf quotes", conf_set("", "FEATURES", "-docs +lto"), "FEATURES=\"-docs +lto\"\n");
 	check_str("conf duplicates", conf_set("A=1\n  A=2\n", "A", "3"), "A=3\n");
+	check_str("conf get", conf_get("# PROFILE=old\nPROFILE=native\n PROFILE=\"steam-deck\" # mine\n", "PROFILE"),
+		  "steam-deck");
+	check_str("conf get: unset", conf_get("JOBS=4\n", "PROFILE"), NULL);
+	check_str("detect", detected_profile("arch       x86_64\nmodel      Jupiter\nprofile    steam-deck\n"),
+		  "steam-deck");
+	check_str("detect: none", detected_profile("arch x86_64\n"), NULL);
 
 	/* the kernel command line */
 	check_str("cmdline", cmdline_text("abc", "subvol=@", "quiet"), "root=PARTUUID=abc rootflags=subvol=@ rootwait ro quiet");
