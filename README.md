@@ -7,8 +7,9 @@
 *English summary: the CleanLinux installer. Erases a disk (GPT, an EFI system partition and btrfs with the
 subvolumes `@`, `@home`, `@snapshots`) or uses filesystems already mounted at `--target`; installs the very
 package builds of the running system (`burn clone`), writes fstab by PARTUUID, the kernel command line,
-hostname, passwords (yescrypt) and a user, enables dhcpcd (and iwd with Wi-Fi), puts the kernel and
-systemd-boot into the ESP and adds an EFI boot entry. C17, libblkid, libxcrypt. MIT.*
+hostname, passwords (yescrypt) and a user, enables dhcpcd (and iwd with Wi-Fi), puts the kernel into the ESP
+for the boot loader of the device (systemd-boot with an EFI boot entry; U-Boot extlinux, the Raspberry Pi
+firmware or an Android boot image when the profile says so). C17, libblkid, libxcrypt. MIT.*
 
 ## Использование
 
@@ -49,8 +50,12 @@ cleanlinux-install --target /mnt                     # своя разметка
    и пользователь в группах `wheel`, `audio`, `video` и `seat` — тех, что есть в новой системе (без logind звук
    и место seatd даются группами; `useradd -R`, хэш yescrypt из libxcrypt), сервисы dinit: `dhcpcd`, а при Wi-Fi —
    `iwd` и известные живой системе сети.
-8. `cleanlinux-boot --root /mnt kernel sync`: ядро и systemd-boot в ESP, затем запись `CleanLinux` в NVRAM
-   (efivarfs, первой в `BootOrder`); без неё прошивка всё равно найдёт `EFI/BOOT/BOOTX64.EFI`.
+8. `cleanlinux-boot --root /mnt kernel sync`: ядро в ESP под загрузчик устройства (`loader=` из `boot.d`
+   новой системы — его ставит пакет `hardware` по `BOOTLOADER` профиля). Для systemd-boot — записи, сам
+   загрузчик и запись `CleanLinux` в NVRAM (efivarfs, первой в `BootOrder`; без неё прошивка всё равно найдёт
+   `EFI/BOOT/BOOTX64.EFI`); для U-Boot — `extlinux/extlinux.conf`, для Raspberry Pi — `config.txt`; для
+   устройств с ABL — Android boot image в `/var/lib/cleanlinux/android/`, его остаётся прошить в раздел `boot`
+   (`android.partition=` и `cleanlinux-boot kernel sync --flash` или `fastboot flash boot`).
 9. Отмонтирует (`--keep-mounted` — оставить).
 
 Пароли берутся с терминала или из файла (`--root-password-file`, `--user-password-file`, `-` — stdin):

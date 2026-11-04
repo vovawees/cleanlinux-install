@@ -6,8 +6,10 @@
  *
  * The packages are the very builds the running system has installed (burn clone, from the
  * package cache, nothing is built); then fstab by PARTUUID, the kernel command line, hostname,
- * passwords and a user, network services, the kernel and systemd-boot in the ESP and an EFI
- * boot entry. No desktop or other choices: those come with spins on top of the base. */
+ * passwords and a user, network services, the kernel for the boot loader of the device in the ESP
+ * (systemd-boot and an EFI boot entry; U-Boot extlinux, the Raspberry Pi firmware or an Android
+ * boot image when the profile says so). No desktop or other choices: those come with spins on top
+ * of the base. */
 #define _GNU_SOURCE
 #include "install.h"
 
@@ -454,26 +456,61 @@ static void services(void)
 	}
 }
 
+static bool have_glob(const char *dir, const char *pattern)
+{
+	char *pat = xasprintf("%s/%s", dir, pattern);
+	glob_t g;
+	int r = glob(pat, 0, NULL, &g);
+	free(pat);
+	if (r == 0)
+		globfree(&g);
+	return r == 0;
+}
+
+/* the boot loaders of the new system: loader= of cleanlinux-boot kernel config (its boot.d, from the
+ * package hardware of the profile); systemd-boot when it does not say */
+static void target_loaders(strv *out)
+{
+	char *cfg = NULL;
+	if (!o.dry_run) {
+		char *argv[] = {"cleanlinux-boot", "--root", (char *)o.target, "kernel", "config", NULL};
+		cfg = run_output(argv);
+	}
+	char *loader = cfg ? conf_get(cfg, "loader") : NULL;
+	strv_split(out, loader && *loader ? loader : "systemd-boot");
+	free(loader);
+	free(cfg);
+}
+
 static void bootloader(const char *esp, const char *esp_dev, const char *esp_partuuid)
 {
-	msg("Kernel and systemd-boot in the EFI system partition (%s)", esp);
+	strv loaders = STRV_INIT;
+	target_loaders(&loaders);
+	char *names = argv_text(strv_argv(&loaders));
+	msg("Kernel and boot loader (%s) in the boot partition (%s)", names, esp);
+	free(names);
 	must_run(NULL, "cleanlinux-boot kernel sync", "cleanlinux-boot", "--root", o.target, "kernel", "sync", NULL);
+	bool sdboot = strv_contains(&loaders, "systemd-boot");
 	if (!o.dry_run) {
-		char *pat = xasprintf("%s/loader/entries/*.conf", esp);
-		glob_t g;
-		int r = glob(pat, 0, NULL, &g);
-		free(pat);
-		if (r != 0)
+		if (sdboot && !have_glob(esp, "loader/entries/*.conf"))
 			die("no boot entry in %s/loader/entries", esp);
-		globfree(&g);
-		pat = xasprintf("%s/EFI/BOOT/BOOT*.EFI", esp);
-		r = glob(pat, 0, NULL, &g);
-		free(pat);
-		if (r != 0)
+		if (sdboot && !have_glob(esp, "EFI/BOOT/BOOT*.EFI"))
 			die("no systemd-boot in %s/EFI/BOOT (is systemd-boot installed?)", esp);
-		globfree(&g);
+		if (strv_contains(&loaders, "extlinux") && !have_glob(esp, "extlinux/extlinux.conf"))
+			die("no %s/extlinux/extlinux.conf for U-Boot", esp);
+		if (strv_contains(&loaders, "rpi") && !have_glob(esp, "config.txt"))
+			die("no %s/config.txt for the Raspberry Pi firmware", esp);
+		if (strv_contains(&loaders, "android")) {
+			char *dir = xasprintf("%s/var/lib/cleanlinux/android", o.target);
+			if (!have_glob(dir, "*.img"))
+				die("no Android boot image in %s (is devicetree= set in /etc/cleanlinux/boot.d?)", dir);
+			info("Android boot image in /var/lib/cleanlinux/android: flash it into the boot partition of the device");
+			info("(android.partition= in /etc/cleanlinux/boot.d and cleanlinux-boot kernel sync --flash, or fastboot flash boot)");
+			free(dir);
+		}
 	}
-	if (o.no_efi_entry || !*EFI_ARCH)
+	strv_free(&loaders);
+	if (!sdboot || o.no_efi_entry || !*EFI_ARCH)
 		return;
 	if (!is_dir("/sys/firmware/efi/efivars")) {
 		info("no EFI variables (not booted with UEFI): the firmware finds EFI/BOOT/BOOT%s.EFI", EFI_ARCH_UP);
