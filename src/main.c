@@ -1,15 +1,18 @@
 /* SPDX-License-Identifier: MIT */
 /* cleanlinux-install: put the running CleanLinux on a disk.
  *
- *   cleanlinux-install [options] DISK      erase DISK: GPT, ESP (vfat) + btrfs (@ @home @snapshots)
- *   cleanlinux-install [options] -t DIR    install into filesystems already mounted at DIR
+ *   cleanlinux-install [options] DISK      erase DISK: GPT, ESP (vfat) + btrfs (@ @home @snapshots),
+ *                                          with --encrypt inside LUKS2
+ *   cleanlinux-install [options] -t DIR    install into filesystems already mounted at DIR (the
+ *                                          root may be an open LUKS container)
  *
  * The packages are the very builds the running system has installed (burn clone, from the
  * package cache, nothing is built); then fstab by PARTUUID, the kernel command line, hostname,
  * passwords and a user, network services, the kernel for the boot loader of the device in the ESP
  * (systemd-boot and an EFI boot entry; U-Boot extlinux, the Raspberry Pi firmware or an Android
- * boot image when the profile says so). No desktop or other choices: those come with spins on top
- * of the base. */
+ * boot image when the profile says so). An encrypted root gets an initramfs (cleanlinux-boot) that
+ * opens it: rd.luks.uuid= on the kernel command line, dm-crypt and cryptsetup inside. No desktop or
+ * other choices: those come with spins on top of the base. */
 #define _GNU_SOURCE
 #include "install.h"
 
@@ -46,13 +49,14 @@
 #endif
 
 static struct {
-	const char *disk, *target, *hostname, *user, *root_pw_file, *user_pw_file, *profile, *cmdline;
+	const char *disk, *target, *hostname, *user, *root_pw_file, *user_pw_file, *luks_pw_file, *profile, *cmdline;
 	strv packages;
 	unsigned esp_mib;
-	bool yes, dry_run, keep_mounted, no_efi_entry, target_given;
+	bool yes, dry_run, keep_mounted, no_efi_entry, target_given, encrypt;
 } o = {.target = "/mnt", .hostname = "cleanlinux", .esp_mib = 512};
 
 static strv mounted; /* mount points made here, in order */
+static char *luks_open; /* the LUKS container opened here (its mapping name) */
 static bool finished;
 
 static void unmount_all(void)
@@ -63,6 +67,12 @@ static void unmount_all(void)
 		if (umount2(mounted.v[i], 0) < 0)
 			warn_errno("umount %s", mounted.v[i]);
 	strv_free(&mounted);
+	if (luks_open) {
+		if (runl(NULL, "cryptsetup", "close", luks_open, NULL) != 0)
+			warnx("cryptsetup close %s failed", luks_open);
+		free(luks_open);
+		luks_open = NULL;
+	}
 }
 
 static void at_exit(void)
@@ -83,8 +93,9 @@ static _Noreturn void usage(int code)
 		   "\n"
 		   "Install the running CleanLinux: the same package builds (burn clone), configured for the\n"
 		   "new disk. With DISK everything on it is erased: GPT, an EFI system partition (vfat, /boot)\n"
-		   "and btrfs with the subvolumes @ (/), @home and @snapshots, compressed with zstd. Without\n"
-		   "DISK the filesystems must already be mounted at --target (an ESP at /boot, /efi or /boot/efi).\n"
+		   "and btrfs with the subvolumes @ (/), @home and @snapshots, compressed with zstd (in LUKS2\n"
+		   "with --encrypt). Without DISK the filesystems must already be mounted at --target (an ESP\n"
+		   "at /boot, /efi or /boot/efi; the root may be an open LUKS container).\n"
 		   "\n"
 		   "  -t, --target DIR            mount point of the new system (default /mnt)\n"
 		   "  -H, --hostname NAME         host name (default cleanlinux)\n"
@@ -92,6 +103,10 @@ static _Noreturn void usage(int code)
 		   "      --root-password-file F  the root password: the first line of F (- for stdin);\n"
 		   "                              otherwise it is asked on the terminal\n"
 		   "      --user-password-file F  the same for the user\n"
+		   "      --encrypt               the root in LUKS2 (argon2id): the initramfs asks for the\n"
+		   "                              passphrase at boot\n"
+		   "      --encrypt-password-file F  the passphrase: the first line of F (- for stdin);\n"
+		   "                              otherwise it is asked on the terminal\n"
 		   "  -p, --packages \"A B\"        clone only these packages and their dependencies\n"
 		   "                              (default: every package of the running system)\n"
 		   "  -P, --profile NAME          the burn profile of the new system (default: the running one)\n"
@@ -182,6 +197,8 @@ static void check_tools(void)
 	strv_split(&need, "burn cleanlinux-boot");
 	if (o.disk)
 		strv_split(&need, "sfdisk mkfs.vfat mkfs.btrfs");
+	if (o.encrypt)
+		strv_push(&need, "cryptsetup");
 	if (o.user)
 		strv_push(&need, "useradd");
 	for (size_t i = 0; i < need.n; i++) {
@@ -211,7 +228,8 @@ static void partition(const struct disk *d, const char *esp_uuid, const char *ro
 {
 	struct utsname u;
 	uname(&u);
-	msg("Partitioning %s: GPT, EFI system partition %u MiB + btrfs root", d->dev, o.esp_mib);
+	msg("Partitioning %s: GPT, EFI system partition %u MiB + %s root", d->dev, o.esp_mib,
+	    o.encrypt ? "LUKS2 (btrfs)" : "btrfs");
 	char *script = sfdisk_script(o.esp_mib, esp_uuid, root_uuid, root_part_type(u.machine));
 	must_run(script, "sfdisk", "sfdisk", "--quiet", "--wipe", "always", "--wipe-partitions", "always", d->dev, NULL);
 	free(script);
@@ -219,6 +237,24 @@ static void partition(const struct disk *d, const char *esp_uuid, const char *ro
 	if (udevadm && !o.dry_run)
 		runl(NULL, "udevadm", "settle", "--timeout=10", NULL);
 	free(udevadm);
+}
+
+/* LUKS2 on the root partition, opened as luks-UUID: the name the initramfs of the new system gives
+ * it (rd.luks.uuid=UUID). The passphrase goes to cryptsetup on its standard input as it is (a key
+ * file without a newline: the same bytes as the passphrase typed at boot) and is never shown. */
+static char *encrypt_root(const char *part, const char *uuid, const char *pass)
+{
+	msg("Encrypting %s: LUKS2, the passphrase is asked at boot", part);
+	const char *in = o.dry_run ? NULL : pass;
+	must_run(in, "cryptsetup luksFormat", "cryptsetup", "luksFormat", "--batch-mode", "--type", "luks2", "--uuid",
+		 uuid, "--label", "CleanLinux", "--key-file", "-", part, NULL);
+	char *name = xasprintf("luks-%s", uuid);
+	must_run(in, "cryptsetup open", "cryptsetup", "open", "--type", "luks2", "--key-file", "-", part, name, NULL);
+	if (o.dry_run)
+		free(name);
+	else
+		luks_open = name;
+	return luks_mapper(uuid);
 }
 
 static void make_filesystems(const char *esp_dev, const char *root_dev)
@@ -482,7 +518,16 @@ static void target_loaders(strv *out)
 	free(cfg);
 }
 
-static void bootloader(const char *esp, const char *esp_dev, const char *esp_partuuid)
+/* the initramfs of an encrypted root: cleanlinux-boot makes it for every kernel (and again on
+ * each kernel update) with what it needs to open the container */
+#define LUKS_INITRAMFS "/etc/cleanlinux/initramfs.d/50-luks-root.conf"
+static const char luks_initramfs_conf[] =
+	"# cleanlinux-install: the root is in the LUKS container rd.luks.uuid= of the kernel command\n"
+	"# line; the initramfs opens it (cryptsetup asks for the passphrase on the console)\n"
+	"modules=dm-crypt\n"
+	"files=/usr/bin/cryptsetup\n";
+
+static void bootloader(const char *esp, const char *esp_dev, const char *esp_partuuid, bool luks)
 {
 	strv loaders = STRV_INIT;
 	target_loaders(&loaders);
@@ -491,6 +536,13 @@ static void bootloader(const char *esp, const char *esp_dev, const char *esp_par
 	free(names);
 	must_run(NULL, "cleanlinux-boot kernel sync", "cleanlinux-boot", "--root", o.target, "kernel", "sync", NULL);
 	bool sdboot = strv_contains(&loaders, "systemd-boot");
+	if (luks && !o.dry_run) {
+		char *dir = tpath("/var/lib/cleanlinux/initramfs");
+		if (!have_glob(dir, "*.img"))
+			die("no initramfs in %s: the encrypted root cannot be opened at boot", dir);
+		info("initramfs with dm-crypt and cryptsetup: %s", dir);
+		free(dir);
+	}
 	if (!o.dry_run) {
 		if (sdboot && !have_glob(esp, "loader/entries/*.conf"))
 			die("no boot entry in %s/loader/entries", esp);
@@ -546,7 +598,9 @@ static char *get_password(const char *who, const char *file)
 {
 	if (o.dry_run)
 		return xstrdup("$y$dry-run");
-	char *pw = file ? read_password_file(file) : ask_password(who);
+	char *opt = xasprintf("--%s-password-file", strcmp(who, "root") ? "user" : "root");
+	char *pw = file ? read_password_file(file) : ask_password(who, opt);
+	free(opt);
 	char *h = hash_password(pw);
 	explicit_bzero(pw, strlen(pw));
 	free(pw);
@@ -555,13 +609,15 @@ static char *get_password(const char *who, const char *file)
 
 int main(int argc, char **argv)
 {
-	enum { OPT_ROOT_PW = 256, OPT_USER_PW, OPT_CMDLINE, OPT_ESP, OPT_NO_EFI, OPT_KEEP };
+	enum { OPT_ROOT_PW = 256, OPT_USER_PW, OPT_LUKS, OPT_LUKS_PW, OPT_CMDLINE, OPT_ESP, OPT_NO_EFI, OPT_KEEP };
 	static const struct option longopts[] = {
 		{"target", required_argument, NULL, 't'},
 		{"hostname", required_argument, NULL, 'H'},
 		{"user", required_argument, NULL, 'u'},
 		{"root-password-file", required_argument, NULL, OPT_ROOT_PW},
 		{"user-password-file", required_argument, NULL, OPT_USER_PW},
+		{"encrypt", no_argument, NULL, OPT_LUKS},
+		{"encrypt-password-file", required_argument, NULL, OPT_LUKS_PW},
 		{"packages", required_argument, NULL, 'p'},
 		{"profile", required_argument, NULL, 'P'},
 		{"cmdline", required_argument, NULL, OPT_CMDLINE},
@@ -582,6 +638,8 @@ int main(int argc, char **argv)
 		case 'u': o.user = optarg; break;
 		case OPT_ROOT_PW: o.root_pw_file = optarg; break;
 		case OPT_USER_PW: o.user_pw_file = optarg; break;
+		case OPT_LUKS: o.encrypt = true; break;
+		case OPT_LUKS_PW: o.luks_pw_file = optarg; break;
 		case 'p': strv_split(&o.packages, optarg); break;
 		case 'P': o.profile = optarg; break;
 		case OPT_CMDLINE: o.cmdline = optarg; break;
@@ -612,7 +670,15 @@ int main(int argc, char **argv)
 		die("--user %s: lower case letters, digits, '_' and '-', starting with a letter, up to 32", o.user);
 	if (o.user_pw_file && !o.user)
 		die("--user-password-file needs --user");
-	if (o.root_pw_file && o.user_pw_file && !strcmp(o.root_pw_file, "-") && !strcmp(o.user_pw_file, "-"))
+	if (o.luks_pw_file && !o.encrypt)
+		die("--encrypt-password-file needs --encrypt");
+	if (o.encrypt && !o.disk)
+		die("--encrypt formats DISK; with --target an open LUKS container as the root is found by itself");
+	int from_stdin = 0;
+	const char *pw_files[] = {o.root_pw_file, o.user_pw_file, o.luks_pw_file};
+	for (size_t i = 0; i < ARRAY_LEN(pw_files); i++)
+		from_stdin += pw_files[i] && !strcmp(pw_files[i], "-");
+	if (from_stdin > 1)
 		die("only one password can come from stdin");
 	if (o.target[0] != '/')
 		die("--target %s: an absolute path", o.target);
@@ -654,6 +720,8 @@ int main(int argc, char **argv)
 	}
 	if (o.profile)
 		info("burn profile %s", o.profile);
+	if (o.encrypt)
+		info("the root encrypted: LUKS2, the passphrase is asked at boot");
 	if (o.disk && !o.yes && !o.dry_run) {
 		char *q = xasprintf("Erase everything on %s and install CleanLinux? Type yes:", d.dev);
 		if (!ask_yes(q))
@@ -663,9 +731,16 @@ int main(int argc, char **argv)
 	/* passwords before anything changes */
 	char *root_hash = get_password("root", o.root_pw_file);
 	char *user_hash = o.user ? get_password(o.user, o.user_pw_file) : NULL;
+	char *luks_pw = NULL;
+	if (o.encrypt && o.dry_run)
+		luks_pw = xstrdup("dry-run");
+	else if (o.encrypt && o.luks_pw_file)
+		luks_pw = read_password_file(o.luks_pw_file);
+	else if (o.encrypt)
+		luks_pw = ask_password("the encrypted root", "--encrypt-password-file");
 
 	fsents fstab = {0};
-	char *root_spec = NULL, *rootflags = NULL, *esp_dev = NULL, *esp_spec = NULL;
+	char *root_spec = NULL, *rootflags = NULL, *esp_dev = NULL, *esp_spec = NULL, *luks = NULL;
 	if (o.disk) {
 		char esp_uuid[37], root_uuid[37];
 		uuid_random(esp_uuid);
@@ -675,9 +750,17 @@ int main(int argc, char **argv)
 		char *root_dev = disk_part_dev(&d, 2, o.dry_run ? 0 : 10000);
 		if (!esp_dev || !root_dev)
 			die("the new partitions of %s did not appear", d.dev);
+		if (o.encrypt) {
+			char luks_uuid[37];
+			uuid_random(luks_uuid);
+			luks = xstrdup(luks_uuid);
+			char *mapped = encrypt_root(root_dev, luks, luks_pw);
+			free(root_dev);
+			root_dev = mapped;
+		}
 		make_filesystems(esp_dev, root_dev);
 		mount_target(esp_dev, root_dev);
-		root_spec = xasprintf("PARTUUID=%s", root_uuid);
+		root_spec = luks ? luks_mapper(luks) : xasprintf("PARTUUID=%s", root_uuid);
 		esp_spec = xasprintf("PARTUUID=%s", esp_uuid);
 		rootflags = xstrdup("subvol=@");
 		fsents_add(&fstab, root_spec, "/", "btrfs", "subvol=@," BTRFS_OPTS, 0);
@@ -694,12 +777,21 @@ int main(int argc, char **argv)
 		mountinfo_fsents(mi, o.target, NULL, NULL, &raw);
 		free(mi);
 		const char *esp_rel = esp + strlen(o.target);
+		/* the root: a partition, or an open LUKS container (the initramfs of the new system
+		 * opens it as luks-UUID, and fstab names it so) */
+		const char *root_src = NULL;
+		for (size_t i = 0; i < raw.n; i++)
+			if (!strcmp(raw.v[i].dir, "/"))
+				root_src = raw.v[i].spec;
+		if (root_src && (luks = luks_uuid_of(root_src)))
+			info("the root %s is the LUKS container %s: opened by the initramfs at boot", root_src, luks);
 		for (size_t i = 0; i < raw.n; i++) {
-			char *spec = partuuid_of(raw.v[i].spec, NULL);
+			bool in_luks = luks && !strcmp(raw.v[i].spec, root_src);
+			char *spec = in_luks ? luks_mapper(luks) : partuuid_of(raw.v[i].spec, NULL);
 			if (!strcmp(raw.v[i].dir, "/")) {
 				if (!spec)
-					die("%s (the root) has no PARTUUID: it must be a partition (LUKS and LVM need an "
-					    "initramfs, not supported by the installer yet)",
+					die("%s (the root) has no PARTUUID: it must be a partition or an open LUKS "
+					    "container (LVM is not supported)",
 					    raw.v[i].spec);
 				root_spec = xstrdup(spec);
 				const char *sv = strstr(raw.v[i].opts, "subvol=");
@@ -710,8 +802,13 @@ int main(int argc, char **argv)
 				esp_dev = xstrdup(raw.v[i].spec);
 				esp_spec = spec ? xstrdup(spec) : NULL;
 			}
-			if (!spec)
+			char *other = spec ? NULL : luks_uuid_of(raw.v[i].spec);
+			if (other)
+				warnx("%s (%s) is another LUKS container: only the root's is opened at boot", raw.v[i].spec,
+				      raw.v[i].dir);
+			else if (!spec)
 				warnx("%s has no PARTUUID: fstab names it by its device path", raw.v[i].spec);
+			free(other);
 			fsents_add(&fstab, spec ? spec : raw.v[i].spec, raw.v[i].dir, raw.v[i].type, raw.v[i].opts, raw.v[i].pass);
 			free(spec);
 		}
@@ -727,18 +824,32 @@ int main(int argc, char **argv)
 
 	/* the command line first: the kernel package's trigger writes the boot entry with it */
 	msg("Kernel command line");
-	char *cl = cmdline_text(root_spec + strlen("PARTUUID="), rootflags, o.cmdline);
+	char *cl = cmdline_text(root_spec, luks, rootflags, o.cmdline);
 	char *clf = xasprintf("%s\n", cl), *clp = tpath("/etc/kernel/cmdline");
 	put_file(clp, clf, 0644, true);
 	free(clf);
 	free(clp);
 	free(cl);
+	if (luks) {
+		char *p = tpath(LUKS_INITRAMFS);
+		put_file(p, luks_initramfs_conf, 0644, true);
+		free(p);
+		if (o.packages.n && !strv_contains(&o.packages, "cryptsetup"))
+			strv_push(&o.packages, "cryptsetup");
+	}
 
 	clone_system();
+	if (luks && !o.dry_run) {
+		char *cs = tpath("/usr/bin/cryptsetup");
+		if (!is_file(cs))
+			die("the root is encrypted, but the new system has no cryptsetup (burn install cryptsetup on the "
+			    "running system)");
+		free(cs);
+	}
 	write_config(&fstab);
 	users(root_hash, user_hash);
 	services();
-	bootloader(esp, esp_dev, esp_spec);
+	bootloader(esp, esp_dev, esp_spec, luks != NULL);
 	finished = true;
 	if (!o.keep_mounted && !o.dry_run) {
 		msg("Unmounting %s", o.target);
@@ -751,6 +862,11 @@ int main(int argc, char **argv)
 	fsents_free(&fstab);
 	free(root_hash);
 	free(user_hash);
+	if (luks_pw) {
+		explicit_bzero(luks_pw, strlen(luks_pw));
+		free(luks_pw);
+	}
+	free(luks);
 	free(root_spec);
 	free(esp_spec);
 	free(esp_dev);

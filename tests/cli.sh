@@ -11,7 +11,7 @@ fail() {
 }
 # the tools of a CleanLinux system, as stand-ins
 mkdir -p "$tmp/bin"
-for t in burn cleanlinux-boot sfdisk mkfs.vfat mkfs.btrfs useradd udevadm; do
+for t in burn cleanlinux-boot sfdisk mkfs.vfat mkfs.btrfs useradd udevadm cryptsetup; do
 	printf '#!/bin/sh\necho "%s $*" >>"%s/ran"\n' "$t" "$tmp" >"$tmp/bin/$t"
 	chmod 755 "$tmp/bin/$t"
 done
@@ -46,6 +46,14 @@ fi
 mkdir -p "$tmp/notmounted"
 if ci -n -t "$tmp/notmounted" 2>"$tmp/err"; then fail "target not mounted"; fi
 grep -q 'is not a mount point' "$tmp/err" || fail "mount point message: $(cat "$tmp/err")"
+if ci -n --encrypt-password-file x /dev/null 2>"$tmp/err"; then fail "a passphrase without --encrypt"; fi
+grep -q 'needs --encrypt' "$tmp/err" || fail "passphrase message: $(cat "$tmp/err")"
+if ci -n --encrypt -t "$tmp/notmounted" 2>"$tmp/err"; then fail "--encrypt without a disk"; fi
+grep -q 'encrypt formats DISK' "$tmp/err" || fail "--encrypt message: $(cat "$tmp/err")"
+if ci -n --root-password-file - --encrypt --encrypt-password-file - /dev/null 2>"$tmp/err"; then
+	fail "two passwords from stdin"
+fi
+grep -q 'only one password can come from stdin' "$tmp/err" || fail "stdin message: $(cat "$tmp/err")"
 
 # a dry run on a real disk of this machine (read only): the whole plan, nothing runs
 disk=
@@ -69,6 +77,19 @@ if [ -n "$disk" ]; then
 	done
 	[ ! -e "$tmp/ran" ] || fail "dry run ran: $(cat "$tmp/ran")"
 	[ ! -e "$tmp/target" ] || fail "dry run created the target"
+	# the same with the root in LUKS2
+	ci -n -y -t "$tmp/target" --encrypt -p "base linux" "$disk" >"$tmp/out" 2>&1 ||
+		fail "encrypted dry run on $disk: $(cat "$tmp/out")"
+	for want in 'LUKS2 (btrfs) root' 'cryptsetup luksFormat --batch-mode --type luks2 --uuid ' \
+		'--label CleanLinux --key-file - ' 'cryptsetup open --type luks2 --key-file - ' \
+		'mkfs.btrfs -f -q -L CleanLinux /dev/mapper/luks-' 'rd.luks.uuid=' ' root=/dev/mapper/luks-' \
+		"$tmp/target/etc/cleanlinux/initramfs.d/50-luks-root.conf" 'modules=dm-crypt' 'files=/usr/bin/cryptsetup' \
+		"burn -r $tmp/target -y clone / base linux cryptsetup" ' /home btrfs subvol=@home,compress=zstd:1,noatime 0 0'; do
+		grep -qF -- "$want" "$tmp/out" || fail "encrypted dry run: no '$want' in: $(cat "$tmp/out")"
+	done
+	grep -q '^ */dev/mapper/luks-[0-9a-f-]* / btrfs ' "$tmp/out" || fail "encrypted dry run: fstab: $(cat "$tmp/out")"
+	if grep -q 'dry-run' "$tmp/out"; then fail "encrypted dry run shows the passphrase: $(cat "$tmp/out")"; fi
+	[ ! -e "$tmp/ran" ] || fail "encrypted dry run ran: $(cat "$tmp/ran")"
 else
 	echo "cli: no disk for the dry run, skipped"
 fi

@@ -121,6 +121,15 @@ int main(void)
 		  "PARTUUID=1111 /boot vfat umask=0077,noatime 0 2\n"
 		  "/dev/sdb1 /srv\\040data ext4 defaults 0 2\n");
 	fsents_free(&f);
+	fsents_add(&f, "/dev/mapper/luks-u-1", "/", "btrfs", "subvol=@", 0);
+	check_str("fstab luks", fstab_text(&f),
+		  "# /etc/fstab, written by cleanlinux-install. Partitions by PARTUUID: the names survive\n"
+		  "# reformatting and disk order (ls -l /dev/disk/by-partuuid).\n"
+		  "# <device> <mount point> <type> <options> <dump> <pass>\n"
+		  "# The encrypted root: /dev/mapper/luks-<UUID of the LUKS container>, opened by the\n"
+		  "# initramfs (rd.luks.uuid= on the kernel command line).\n"
+		  "/dev/mapper/luks-u-1 / btrfs subvol=@ 0 0\n");
+	fsents_free(&f);
 	/* an overmounted mount point: the last mount wins */
 	const char *mi2 = "60 1 0:40 / /t rw - ext4 /dev/sda1 rw\n"
 			  "61 60 0:41 / /t/boot rw - vfat /dev/sda2 rw\n"
@@ -158,8 +167,21 @@ int main(void)
 	check_str("detect: none", detected_profile("arch x86_64\n"), NULL);
 
 	/* the kernel command line */
-	check_str("cmdline", cmdline_text("abc", "subvol=@", "quiet"), "root=PARTUUID=abc rootflags=subvol=@ rootwait ro quiet");
-	check_str("cmdline plain", cmdline_text("abc", NULL, NULL), "root=PARTUUID=abc rootwait ro");
+	check_str("cmdline", cmdline_text("PARTUUID=abc", NULL, "subvol=@", "quiet"),
+		  "root=PARTUUID=abc rootflags=subvol=@ rootwait ro quiet");
+	check_str("cmdline plain", cmdline_text("PARTUUID=abc", NULL, NULL, NULL), "root=PARTUUID=abc rootwait ro");
+	check_str("cmdline luks", cmdline_text("/dev/mapper/luks-u-1", "u-1", "subvol=@", NULL),
+		  "rd.luks.uuid=u-1 root=/dev/mapper/luks-u-1 rootflags=subvol=@ rootwait ro");
+
+	/* LUKS containers by their device-mapper UUID */
+	check_str("luks2 dm uuid", luks_uuid_of_dm("CRYPT-LUKS2-7946c1de0d284951b5437ba98661c25c-cryptroot"),
+		  "7946c1de-0d28-4951-b543-7ba98661c25c");
+	check_str("luks1 dm uuid", luks_uuid_of_dm("CRYPT-LUKS1-7946C1DE0D284951B5437BA98661C25C-x\n"),
+		  "7946c1de-0d28-4951-b543-7ba98661c25c");
+	check_str("plain dm-crypt", luks_uuid_of_dm("CRYPT-PLAIN-cryptswap"), NULL);
+	check_str("lvm", luks_uuid_of_dm("LVM-abcdefabcdefabcdefabcdefabcdefab"), NULL);
+	check_str("short", luks_uuid_of_dm("CRYPT-LUKS2-7946c1de-x"), NULL);
+	check_str("mapper", luks_mapper("u-1"), "/dev/mapper/luks-u-1");
 
 	/* names */
 	CHECK(valid_hostname("cleanlinux") && valid_hostname("box-1.lan") && !valid_hostname("-x") &&

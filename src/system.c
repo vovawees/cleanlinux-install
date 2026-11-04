@@ -212,6 +212,19 @@ char *partuuid_of(const char *dev, void *ctx)
 
 char *fstype_of(const char *dev) { return blkid_value(dev, "TYPE", false); }
 
+char *luks_uuid_of(const char *dev)
+{
+	struct stat st;
+	if (stat(dev, &st) < 0 || !S_ISBLK(st.st_mode))
+		return NULL;
+	char *p = xasprintf("/sys/dev/block/%u:%u/dm/uuid", major(st.st_rdev), minor(st.st_rdev));
+	char *u = read_line(p);
+	free(p);
+	char *luks = luks_uuid_of_dm(u);
+	free(u);
+	return luks;
+}
+
 int btrfs_subvol_create(const char *parent, const char *name)
 {
 	int fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -402,12 +415,11 @@ static char *tty_line(int fd, bool echo)
 	return s;
 }
 
-char *ask_password(const char *who)
+char *ask_password(const char *who, const char *option)
 {
 	int fd = open("/dev/tty", O_RDWR | O_CLOEXEC | O_NOCTTY);
 	if (fd < 0)
-		die("no terminal to ask the password of %s: use --%s-password-file", who,
-		    strcmp(who, "root") ? "user" : "root");
+		die("no terminal to ask the password of %s: use %s", who, option);
 	for (int tries = 0; tries < 3; tries++) {
 		dprintf(fd, "New password for %s: ", who);
 		char *a = tty_line(fd, false);

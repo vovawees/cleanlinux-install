@@ -46,6 +46,12 @@ char *fstab_text(const fsents *f)
 	sb_add(&b, "# /etc/fstab, written by cleanlinux-install. Partitions by PARTUUID: the names survive\n"
 		   "# reformatting and disk order (ls -l /dev/disk/by-partuuid).\n"
 		   "# <device> <mount point> <type> <options> <dump> <pass>\n");
+	for (size_t i = 0; i < f->n; i++)
+		if (str_prefix(f->v[i].spec, "/dev/mapper/luks-")) {
+			sb_add(&b, "# The encrypted root: /dev/mapper/luks-<UUID of the LUKS container>, opened by the\n"
+				   "# initramfs (rd.luks.uuid= on the kernel command line).\n");
+			break;
+		}
 	for (size_t i = 0; i < f->n; i++) {
 		fstab_field(&b, f->v[i].spec);
 		sb_add(&b, " ");
@@ -491,10 +497,12 @@ char *detected_profile(const char *out)
 	return NULL;
 }
 
-char *cmdline_text(const char *root_partuuid, const char *rootflags, const char *extra)
+char *cmdline_text(const char *root, const char *luks_uuid, const char *rootflags, const char *extra)
 {
 	sbuf b = SBUF_INIT;
-	sb_printf(&b, "root=PARTUUID=%s", root_partuuid);
+	if (luks_uuid && *luks_uuid)
+		sb_printf(&b, "rd.luks.uuid=%s ", luks_uuid);
+	sb_printf(&b, "root=%s", root);
 	if (rootflags && *rootflags)
 		sb_printf(&b, " rootflags=%s", rootflags);
 	sb_add(&b, " rootwait ro");
@@ -502,6 +510,28 @@ char *cmdline_text(const char *root_partuuid, const char *rootflags, const char 
 		sb_printf(&b, " %s", extra);
 	return sb_take(&b);
 }
+
+char *luks_uuid_of_dm(const char *dm_uuid)
+{
+	if (!dm_uuid || (!str_prefix(dm_uuid, "CRYPT-LUKS2-") && !str_prefix(dm_uuid, "CRYPT-LUKS1-")))
+		return NULL;
+	const char *p = dm_uuid + strlen("CRYPT-LUKS2-");
+	char out[37];
+	size_t j = 0;
+	for (int i = 0; i < 32; i++) {
+		if (!isxdigit((unsigned char)p[i]))
+			return NULL;
+		if (i == 8 || i == 12 || i == 16 || i == 20)
+			out[j++] = '-';
+		out[j++] = (char)tolower((unsigned char)p[i]);
+	}
+	if (p[32] != '-' && p[32] != '\0' && p[32] != '\n')
+		return NULL;
+	out[j] = '\0';
+	return xstrdup(out);
+}
+
+char *luks_mapper(const char *luks_uuid) { return xasprintf("/dev/mapper/luks-%s", luks_uuid); }
 
 bool valid_hostname(const char *s)
 {

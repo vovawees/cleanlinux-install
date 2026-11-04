@@ -50,8 +50,14 @@ char *conf_set(const char *text, const char *key, const char *value);
 char *conf_get(const char *text, const char *key);
 /* the profile line of `burn profile detect`; NULL without one */
 char *detected_profile(const char *out);
-/* the kernel command line of the new system */
-char *cmdline_text(const char *root_partuuid, const char *rootflags, const char *extra);
+/* the kernel command line of the new system: ROOT is the value of root= (PARTUUID=… or a device);
+ * with LUKS_UUID the initramfs first opens that LUKS container (rd.luks.uuid=) */
+char *cmdline_text(const char *root, const char *luks_uuid, const char *rootflags, const char *extra);
+/* the LUKS UUID of a dm-crypt mapping from its device-mapper UUID ("CRYPT-LUKS2-<32 hex>-<name>",
+ * /sys/class/block/dm-N/dm/uuid); NULL when the mapping is not a LUKS container */
+char *luks_uuid_of_dm(const char *dm_uuid);
+/* the mapping the initramfs of the new system opens it as: /dev/mapper/luks-<UUID> */
+char *luks_mapper(const char *luks_uuid);
 bool valid_hostname(const char *s);
 bool valid_username(const char *s);
 char *size_text(uint64_t bytes);
@@ -72,10 +78,12 @@ char *disk_part_dev(const struct disk *d, unsigned n, int wait_ms); /* /dev/vdb1
 uint64_t sysfs_u64(const char *dir, const char *file);
 char *partuuid_of(const char *dev, void *ctx); /* "PARTUUID=…" via libblkid, or NULL */
 char *fstype_of(const char *dev);
+char *luks_uuid_of(const char *dev); /* the LUKS UUID when DEV is an open LUKS container (dm-crypt) */
 int btrfs_subvol_create(const char *parent, const char *name);
 int efi_boot_entry(const struct disk *d, unsigned partno, const char *partuuid, const char *loader, const char *desc);
 char *hash_password(const char *pw);
-char *ask_password(const char *who);
+/* asked twice on the terminal; OPTION names the file option that replaces the question */
+char *ask_password(const char *who, const char *option);
 char *read_password_file(const char *path);
 bool ask_yes(const char *question);
 
