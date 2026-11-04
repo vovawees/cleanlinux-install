@@ -3,7 +3,7 @@
 #define _GNU_SOURCE
 #include "install.h"
 
-#include <blkid.h>
+#include <blkid/blkid.h>
 #include <crypt.h>
 #include <ctype.h>
 #include <dirent.h>
