@@ -43,6 +43,7 @@ size_t efi_load_option(uint8_t *buf, size_t cap, const char *desc, uint32_t part
 		       uint64_t size, const uint8_t guid[16], const char *path);
 /* /etc/shadow text with USER's password set to HASH (changed DAYS after the epoch) */
 char *shadow_set(const char *text, const char *user, const char *hash, long days);
+char *user_groups(const char *group_text);
 /* KEY=value set in a shell-style configuration text (replaced or appended) */
 char *conf_set(const char *text, const char *key, const char *value);
 /* the value of KEY in such a text (the last assignment, without quotes); NULL when unset */

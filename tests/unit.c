@@ -139,6 +139,10 @@ int main(void)
 	check_str("shadow append", shadow_set("root::1::::::", "bob", "$y$q", 7), "root::1::::::\nbob:$y$q:7:0:99999:7:::\n");
 	check_str("shadow prefix name", shadow_set("rootx:!:1::::::\n", "root", "H", 2), "rootx:!:1::::::\nroot:H:2:0:99999:7:::\n");
 	check_str("shadow short line", shadow_set("root:x\n", "root", "H", 3), "root:H:3:0:99999:7:::\n");
+	check_str("groups none", user_groups("root:x:0:\nwheel:x:97:\n"), "wheel");
+	check_str("groups all", user_groups("seat:x:950:\naudio:x:11:\nvideo:x:12:\nvideox:x:1:\n"), "wheel,audio,video,seat");
+	check_str("groups prefix", user_groups("audiox:x:5:\nxvideo:x:6:\nseat"), "wheel");
+	check_str("groups null", user_groups(NULL), "wheel");
 
 	/* burn.conf: PROFILE replaced or appended, comments kept */
 	check_str("conf replace", conf_set("# PROFILE=old\nPROFILE=native\nJOBS=4\n", "PROFILE", "steam-deck"),

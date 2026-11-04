@@ -378,6 +378,29 @@ char *shadow_set(const char *text, const char *user, const char *hash, long days
 	return sb_take(&b);
 }
 
+/* The groups of the new user: wheel (su, sudo), and those of /etc/group that a desktop without
+ * logind needs: audio (the sound devices: no uaccess ACLs without logind), video (backlight, the
+ * DRM devices outside a seat), seat (seatd, the compositors of the spins) */
+char *user_groups(const char *group_text)
+{
+	static const char *const extra[] = {"audio", "video", "seat"};
+	sbuf b = SBUF_INIT;
+	sb_add(&b, "wheel");
+	for (size_t i = 0; i < sizeof(extra) / sizeof(extra[0]); i++) {
+		size_t n = strlen(extra[i]);
+		for (const char *p = group_text; p && *p;) {
+			if (!strncmp(p, extra[i], n) && p[n] == ':') {
+				sb_printf(&b, ",%s", extra[i]);
+				break;
+			}
+			p = strchr(p, '\n');
+			if (p)
+				p++;
+		}
+	}
+	return sb_take(&b);
+}
+
 static bool needs_quotes(const char *v)
 {
 	if (!*v)

@@ -46,7 +46,8 @@ cleanlinux-install --target /mnt                     # своя разметка
 6. `burn -r /mnt -y clone /`: все пакеты живой системы (или `--packages` с зависимостями) из
    `/var/cache/burn/packages`, в порядке зависимостей, с триггерами (ldconfig, depmod, hwdb, sysusers, ядро в ESP).
 7. Настраивает: `fstab` по PARTUUID, `hostname`, `burn.conf` живой системы (профиль — `--profile`), пароль root
-   и пользователь в группе `wheel` (`useradd -R`, хэш yescrypt из libxcrypt), сервисы dinit: `dhcpcd`, а при Wi-Fi —
+   и пользователь в группах `wheel`, `audio`, `video` и `seat` — тех, что есть в новой системе (без logind звук
+   и место seatd даются группами; `useradd -R`, хэш yescrypt из libxcrypt), сервисы dinit: `dhcpcd`, а при Wi-Fi —
    `iwd` и известные живой системе сети.
 8. `cleanlinux-boot --root /mnt kernel sync`: ядро и systemd-boot в ESP, затем запись `CleanLinux` в NVRAM
    (efivarfs, первой в `BootOrder`); без неё прошивка всё равно найдёт `EFI/BOOT/BOOTX64.EFI`.

@@ -387,10 +387,15 @@ static void users(const char *root_hash, const char *user_hash)
 	free(needle);
 	free(passwd);
 	free(pw);
-	if (exists_already)
+	if (exists_already) {
 		info("user %s exists already", o.user);
-	else
-		must_run(NULL, "useradd", "useradd", "-R", o.target, "-m", "-U", "-G", "wheel", "-s", "/bin/bash", o.user, NULL);
+	} else {
+		char *gp = tpath("/etc/group"), *gt = read_file(gp, NULL), *groups = user_groups(gt);
+		must_run(NULL, "useradd", "useradd", "-R", o.target, "-m", "-U", "-G", groups, "-s", "/bin/bash", o.user, NULL);
+		free(groups);
+		free(gt);
+		free(gp);
+	}
 	set_password(o.user, user_hash);
 }
 
