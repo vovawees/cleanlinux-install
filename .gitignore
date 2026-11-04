@@ -1,0 +1,4 @@
+*.o
+/cleanlinux-install
+/tests/unit
+/cleanlinux-install-*.tar.gz
