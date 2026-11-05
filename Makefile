@@ -52,8 +52,9 @@ install: all
 	install -Dm755 cleanlinux-install $(DESTDIR)$(BINDIR)/cleanlinux-install
 	install -Dm755 cleanlinux-setup $(DESTDIR)$(BINDIR)/cleanlinux-setup
 
+# dist: the archive of the tag v$(VERSION) (made after the tag, it holds what the release is)
 dist:
-	git archive --format=tar --prefix=cleanlinux-install-$(VERSION)/ HEAD | gzip -n -9 >cleanlinux-install-$(VERSION).tar.gz
+	git archive --format=tar --prefix=cleanlinux-install-$(VERSION)/ v$(VERSION) | gzip -n -9 >cleanlinux-install-$(VERSION).tar.gz
 
 clean:
 	rm -f src/*.o tests/unit cleanlinux-install cleanlinux-setup cleanlinux-install-*.tar.gz
