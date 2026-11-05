@@ -127,7 +127,8 @@ cleanlinux-install --target /mnt                     # своя разметка
    `/var/cache/burn/packages`, в порядке зависимостей, с триггерами (ldconfig, depmod, hwdb, sysusers, ядро в ESP).
 7. Настраивает: `fstab` по PARTUUID, `hostname`, часовой пояс (`/etc/localtime` → `--timezone`, иначе как в
    живой системе) и консоль (`/etc/vconsole.conf`: `KEYMAP=`/`FONT=` из `--keymap`/`--font`; их применяет
-   `cleanlinux-boot vconsole` при загрузке), `burn.conf` живой системы (профиль — `--profile`), пароль root
+   `cleanlinux-boot vconsole` при загрузке), `burn.conf` живой системы (профиль — `--profile`; тогда список `FIRMWARE=` живой системы — у ISO он свой —
+   закомментирован, и прошивки берутся по профилю устройства), пароль root
    и пользователь в группах `wheel`, `audio`, `video` и `seat` — тех, что есть в новой системе (без logind звук
    и место seatd даются группами; `useradd -R`, хэш yescrypt из libxcrypt), сервисы dinit: `dhcpcd`, а при Wi-Fi —
    `iwd` и известные живой системе сети.

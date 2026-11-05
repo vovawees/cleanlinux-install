@@ -48,6 +48,8 @@ char *user_groups(const char *group_text);
 char *conf_set(const char *text, const char *key, const char *value);
 /* the value of KEY in such a text (the last assignment, without quotes); NULL when unset */
 char *conf_get(const char *text, const char *key);
+/* TEXT with its KEY= lines commented out */
+char *conf_unset(const char *text, const char *key);
 /* the profile line of `burn profile detect`; NULL without one */
 char *detected_profile(const char *out);
 /* the kernel command line of the new system: ROOT is the value of root= (PARTUUID=… or a device);

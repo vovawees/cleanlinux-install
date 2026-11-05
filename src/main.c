@@ -111,7 +111,8 @@ static _Noreturn void usage(int code)
 		   "                              otherwise it is asked on the terminal\n"
 		   "  -p, --packages \"A B\"        clone only these packages and their dependencies\n"
 		   "                              (default: every package of the running system)\n"
-		   "  -P, --profile NAME          the burn profile of the new system (default: the running one)\n"
+		   "  -P, --profile NAME          the burn profile of the new system (default: the running one;\n"
+		   "                              FIRMWARE= of the running system gives way to the profile's)\n"
 		   "      --timezone ZONE         the time zone: Europe/Moscow, America/New_York, UTC\n"
 		   "                              (/etc/localtime; default: that of the running system)\n"
 		   "      --keymap MAP            the console keymap of kbd: us, de-latin1, ruwin_alt_sh-UTF-8\n"
@@ -391,7 +392,9 @@ static void write_config(const fsents *fstab)
 	if (o.profile) {
 		char *c = conf_set(conf ? conf : "", "PROFILE", o.profile);
 		free(conf);
-		conf = c;
+		/* the firmware list of the running system (the ISO's) gives way to the profile's own */
+		conf = conf_unset(c, "FIRMWARE");
+		free(c);
 	}
 	if (conf)
 		put_file(p, conf, 0644, o.profile != NULL);

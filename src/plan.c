@@ -446,6 +446,28 @@ char *conf_set(const char *text, const char *key, const char *value)
 	return sb_take(&b);
 }
 
+/* TEXT with its KEY= lines commented out ("# KEY=..."): the setting gives way to the default */
+char *conf_unset(const char *text, const char *key)
+{
+	sbuf b = SBUF_INIT;
+	size_t kl = strlen(key);
+	sb_add(&b, "");
+	for (const char *p = text; p && *p;) {
+		size_t len = strcspn(p, "\n");
+		const char *s = p;
+		while (s < p + len && (*s == ' ' || *s == '\t'))
+			s++;
+		if ((size_t)(p + len - s) > kl && !strncmp(s, key, kl) && s[kl] == '=')
+			sb_add(&b, "# ");
+		sb_addn(&b, p, len);
+		sb_add(&b, "\n");
+		p += len;
+		if (*p == '\n')
+			p++;
+	}
+	return sb_take(&b);
+}
+
 char *conf_get(const char *text, const char *key)
 {
 	char *val = NULL;

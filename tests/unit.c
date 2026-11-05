@@ -163,6 +163,9 @@ int main(void)
 	check_str("conf get", conf_get("# PROFILE=old\nPROFILE=native\n PROFILE=\"steam-deck\" # mine\n", "PROFILE"),
 		  "steam-deck");
 	check_str("conf get: unset", conf_get("JOBS=4\n", "PROFILE"), NULL);
+	check_str("conf unset", conf_unset("# the ISO's\nFIRMWARE=\"amdgpu/ i915/\"\nJOBS=4\n FIRMWARE=x\n", "FIRMWARE"),
+		  "# the ISO's\n# FIRMWARE=\"amdgpu/ i915/\"\nJOBS=4\n#  FIRMWARE=x\n");
+	check_str("conf unset: nothing", conf_unset("JOBS=4", "FIRMWARE"), "JOBS=4\n");
 	check_str("detect", detected_profile("arch       x86_64\nmodel      Jupiter\nprofile    steam-deck\n"),
 		  "steam-deck");
 	check_str("detect: none", detected_profile("arch x86_64\n"), NULL);
