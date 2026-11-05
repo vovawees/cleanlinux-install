@@ -56,7 +56,7 @@ static struct {
 	const char *timezone, *keymap, *font, *source, *spin;
 	strv packages;
 	unsigned esp_mib;
-	bool yes, dry_run, keep_mounted, no_efi_entry, target_given, no_nonfree, clone;
+	bool yes, dry_run, keep_mounted, no_efi_entry, target_given, no_nonfree, clone, autologin;
 } o = {.target = "/mnt", .hostname = "cleanlinux", .esp_mib = 512};
 
 static strv mounted; /* mount points made here, in order */
@@ -100,6 +100,8 @@ static _Noreturn void usage(int code)
 		   "      --root-password-file F  the root password: the first line of F (- for stdin);\n"
 		   "                              asked on the terminal when not given\n"
 		   "      --user-password-file F  the same for the user\n"
+		   "      --autologin             the user logs in on tty1 by itself, without a password\n"
+		   "                              (handhelds: no keyboard to type one; a spin starts there)\n"
 		   "  -s, --spin NAME             also the spin NAME of the live medium (spins/NAME: labwc)\n"
 		   "      --no-nonfree            without the proprietary drivers (the layer nonfree/ of the\n"
 		   "                              medium), and burn builds none (ALLOW_NONFREE=0)\n"
@@ -604,6 +606,19 @@ static void users(const char *root_hash, const char *user_hash)
 		free(gp);
 	}
 	set_password(o.user, user_hash);
+	/* cleanlinux-boot's getty logs the user in on tty1 (cleanlinux.autologin=0 turns it off) */
+	char *al = tpath("/etc/cleanlinux/autologin");
+	if (o.autologin) {
+		char *t = xasprintf("# the user who logs in on tty1 by itself (cleanlinux-boot getty); empty: nobody\n%s\n",
+				    o.user);
+		put_file(al, t, 0644, true);
+		free(t);
+	} else if (exists(al)) {
+		info("remove %s", al);
+		if (!o.dry_run && unlink(al) < 0)
+			warn_errno("remove %s", al);
+	}
+	free(al);
 }
 
 static void enable_service(const char *name)
@@ -763,13 +778,14 @@ static char *get_password(const char *who, const char *file)
 int main(int argc, char **argv)
 {
 	enum { OPT_ROOT_PW = 256, OPT_USER_PW, OPT_CMDLINE, OPT_ESP, OPT_NO_EFI, OPT_KEEP, OPT_TZ, OPT_KEYMAP, OPT_FONT,
-	       OPT_SOURCE, OPT_NO_NONFREE, OPT_NONFREE, OPT_CLONE };
+	       OPT_SOURCE, OPT_NO_NONFREE, OPT_NONFREE, OPT_CLONE, OPT_AUTOLOGIN };
 	static const struct option longopts[] = {
 		{"target", required_argument, NULL, 't'},
 		{"hostname", required_argument, NULL, 'H'},
 		{"user", required_argument, NULL, 'u'},
 		{"root-password-file", required_argument, NULL, OPT_ROOT_PW},
 		{"user-password-file", required_argument, NULL, OPT_USER_PW},
+		{"autologin", no_argument, NULL, OPT_AUTOLOGIN},
 		{"spin", required_argument, NULL, 's'},
 		{"no-nonfree", no_argument, NULL, OPT_NO_NONFREE},
 		{"nonfree", no_argument, NULL, OPT_NONFREE},
@@ -798,6 +814,7 @@ int main(int argc, char **argv)
 		case 'u': o.user = optarg; break;
 		case OPT_ROOT_PW: o.root_pw_file = optarg; break;
 		case OPT_USER_PW: o.user_pw_file = optarg; break;
+		case OPT_AUTOLOGIN: o.autologin = true; break;
 		case 's': o.spin = optarg; break;
 		case OPT_NO_NONFREE: o.no_nonfree = true; break;
 		case OPT_NONFREE: o.no_nonfree = false; break;
@@ -844,6 +861,8 @@ int main(int argc, char **argv)
 		die("--spin %s: the name of a spin such as labwc", o.spin);
 	if (o.user_pw_file && !o.user)
 		die("--user-password-file needs --user");
+	if (o.autologin && !o.user)
+		die("--autologin needs --user");
 	if (o.packages.n)
 		o.clone = true;
 	if (o.clone && o.source)

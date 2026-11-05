@@ -30,6 +30,8 @@ grep -q 'hostname bad name' "$tmp/err" || fail "hostname message: $(cat "$tmp/er
 if ci -n --user Root /dev/null 2>"$tmp/err"; then fail "bad user"; fi
 grep -q 'user Root' "$tmp/err" || fail "user message"
 if ci -n --user-password-file x /dev/null 2>"$tmp/err"; then fail "user password without a user"; fi
+if ci -n --autologin /dev/null 2>"$tmp/err"; then fail "autologin without a user"; fi
+grep -q -- '--autologin needs --user' "$tmp/err" || fail "autologin message: $(cat "$tmp/err")"
 if ci -n --esp-size 10 /dev/null 2>"$tmp/err"; then fail "small ESP"; fi
 grep -q 'esp-size' "$tmp/err" || fail "esp-size message"
 if ci -n -t relative /dev/null 2>"$tmp/err"; then fail "relative target"; fi
@@ -80,17 +82,19 @@ disk=
 for s in /sys/block/*; do
 	n=${s##*/}
 	case $n in loop* | ram* | zram* | sr* | dm-* | md* | nbd*) continue ;; esac
-	[ -e "/dev/$n" ] && [ "$(cat "$s/size")" -gt 16777216 ] && [ "$(cat "$s/ro")" = 0 ] || continue
-	disk=/dev/$n && break
+	if [ -e "/dev/$n" ] && [ "$(cat "$s/size")" -gt 16777216 ] && [ "$(cat "$s/ro")" = 0 ]; then
+		disk=/dev/$n && break
+	fi
 done
 if [ -n "$disk" ]; then
-	ci -n -y -t "$tmp/target" --user anna --cmdline console=ttyS0 -p "base linux" "$disk" >"$tmp/out" 2>&1 ||
+	ci -n -y -t "$tmp/target" --user anna --autologin --cmdline console=ttyS0 -p "base linux" "$disk" >"$tmp/out" 2>&1 ||
 		fail "dry run on $disk: $(cat "$tmp/out")"
 	for want in 'label: gpt' 'name="EFI system partition"' "sfdisk --quiet --wipe always --wipe-partitions always $disk" \
 		'mkfs.btrfs -f -q -L CleanLinux' 'btrfs subvolumes: @ (/), @home (/home), @snapshots (/.snapshots)' \
 		"burn -r $tmp/target -y clone / base linux" 'rootflags=subvol=@ rootwait ro console=ttyS0' \
 		'subvol=@home,compress=zstd:1,noatime 0 0' 'umask=0077,noatime 0 2' 'tmpfs /tmp tmpfs nosuid,nodev 0 0' \
 		"useradd -R $tmp/target -m -U -G wheel -s /bin/bash anna" "cleanlinux-boot --root $tmp/target kernel sync" \
+		"write $tmp/target/etc/cleanlinux/autologin" '  anna' \
 		'burn profile detect: steam-deck (the running system builds for ' \
 		'--profile steam-deck makes it the profile of the new system' 'Dry run: nothing was changed' \
 		'proprietary drivers allowed (ALLOW_NONFREE=1)'; do

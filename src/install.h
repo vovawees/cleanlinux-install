@@ -52,6 +52,10 @@ char *conf_get(const char *text, const char *key);
 char *conf_unset(const char *text, const char *key);
 /* the profile line of `burn profile detect`; NULL without one */
 char *detected_profile(const char *out);
+/* the value of KEY in the "key  value" lines of burn's output (profile show, profile detect) */
+char *kv_value(const char *out, const char *key);
+/* is WORD one of the words of LIST (separated by blanks) */
+bool has_word(const char *list, const char *word);
 /* the kernel command line of the new system: ROOT is the value of root= (PARTUUID=… or a device) */
 char *cmdline_text(const char *root, const char *rootflags, const char *extra);
 bool valid_hostname(const char *s);

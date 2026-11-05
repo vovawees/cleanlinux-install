@@ -357,6 +357,11 @@ def test_english(binary, tmp, data):
     t.wait_for("not free software (steamdeck-dsp)", "ALLOW_NONFREE=1")
     t.send(" ")
     t.wait_for("◄ off", "Only free software", "ALLOW_NONFREE=0")
+    # the login: with a password (not a handheld's profile), switched to automatic
+    t.send(DOWN)
+    t.wait_for("Automatic login", "The login asks for the name and the password")
+    t.send(" ")
+    t.wait_for("anna logs in on the screen by itself", "no keyboard for a password")
     t.send(ENTER)
     scr = t.wait_for("Ready to install", "/dev/vdb  QEMU HARDDISK  20.0 GiB", "German (de-latin1)", "Europe/Moscow",
                      "testbox", "anna", "labwc", "off", "ALL DATA ON /dev/vdb WILL BE ERASED.", "< Install >",
@@ -379,6 +384,7 @@ def test_english(binary, tmp, data):
         check(a in args and args[args.index(a) + 1] == b, "%s %s in %r" % (a, b, args))
     check("--no-nonfree" in args and "--encrypt" not in args and args[-2] == "/dev/vdb",
           "no proprietary drivers, the disk last: %r" % args)
+    check("--autologin" in args, "automatic login: %r" % args)
     secrets = open(os.path.join(out, "secrets")).read()
     check("--root-password-file 600 pw1\n" in secrets and "--user-password-file 600 pw1\n" in secrets,
           "the password files: %r" % secrets)
@@ -440,8 +446,8 @@ def test_russian(binary, tmp, data):
     t.send(ENTER, RIGHT, ENTER)
     scr = t.wait_for("Установка не удалась", "код 3", "error: something broke", timeout=20)
     args = open(os.path.join(out, "args")).read().split("\n")
-    check("--spin" not in args and "--no-nonfree" not in args and "--encrypt" not in args,
-          "the console, the drivers: %r" % args)
+    check("--spin" not in args and "--no-nonfree" not in args and "--encrypt" not in args and "--autologin" not in args,
+          "the console, the drivers, a login with a password: %r" % args)
     check(args[args.index("--keymap") + 1] == "ruwin_alt_sh-UTF-8" and args[args.index("--font") + 1] == "latarcyrheb-sun16",
           "the Russian keymap and a Cyrillic font: %r" % args)
     secrets = open(os.path.join(out, "secrets")).read()

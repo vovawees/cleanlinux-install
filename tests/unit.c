@@ -258,6 +258,10 @@ int main(void)
 	check_str("detect", detected_profile("arch       x86_64\nmodel      Jupiter\nprofile    steam-deck\n"),
 		  "steam-deck");
 	check_str("detect: none", detected_profile("arch x86_64\n"), NULL);
+	check_str("kv", kv_value("profile    steam-deck\nfeatures   battery handheld \n", "features"), "battery handheld");
+	check_str("kv: a longer key is not the key", kv_value("featuresx a\n", "features"), NULL);
+	CHECK(has_word("+lto handheld battery", "handheld"), "has_word: handheld");
+	CHECK(!has_word("handhelds battery", "handheld") && !has_word("", "handheld"), "has_word: not a part of a word");
 
 	/* the kernel command line */
 	check_str("cmdline", cmdline_text("PARTUUID=abc", "subvol=@", "quiet"),

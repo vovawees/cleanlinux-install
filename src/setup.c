@@ -1007,10 +1007,24 @@ static int form_screen(const char *title, const char *text, struct field *f, int
 static struct {
 	int kmap, disk, spin; /* spin: in spins[], -1: the console only */
 	char zone[96];
-	bool nonfree, keep_profile;
+	bool nonfree, keep_profile, autologin;
 	char host[65], user[33], upw[128], upw2[128];
 	const char *font;
 } st = {.kmap = 0, .disk = -1, .spin = -1, .nonfree = true};
+
+/* does the profile NAME (NULL: the running one) have the feature handheld: a device without a
+ * keyboard, which logs in by itself (burn profile show) */
+static bool profile_handheld(const char *name)
+{
+	char *const with[] = {"burn", "-p", (char *)name, "profile", "show", NULL};
+	char *const cur[] = {"burn", "profile", "show", NULL};
+	char *out = run_output(name ? with : cur);
+	char *f = kv_value(out, "features");
+	bool h = has_word(f, "handheld");
+	free(f);
+	free(out);
+	return h;
+}
 
 static void wipe_secrets(void)
 {
@@ -1448,7 +1462,7 @@ static const char *spin_desc(const struct spin *s)
 static int scr_system(int dir)
 {
 	(void)dir;
-	struct choice o[3];
+	struct choice o[4];
 	int n = 0;
 	/* the desktop: the spins of the medium, or none */
 	char **dv = xmalloc(((size_t)nspins + 1) * sizeof(char *)), **dn = xmalloc(((size_t)nspins + 1) * sizeof(char *));
@@ -1483,11 +1497,20 @@ static int scr_system(int dir)
 		pn[1] = xstrdup(T(S_PROFILE_NOTE_KEEP));
 		o[n++] = (struct choice){S_SYS_PROFILE, 2, st.keep_profile ? 1 : 0, pv, pn};
 	}
+	/* the login on tty1: by itself on handhelds (their profile), with a password elsewhere */
+	char **av = xmalloc(2 * sizeof(char *)), **an = xmalloc(2 * sizeof(char *));
+	av[0] = xstrdup(T(S_AUTOLOGIN_YES));
+	av[1] = xstrdup(T(S_AUTOLOGIN_NO));
+	an[0] = tf(S_AUTOLOGIN_YES_NOTE, st.user);
+	an[1] = xstrdup(T(S_AUTOLOGIN_NO_NOTE));
+	int al = n;
+	o[n++] = (struct choice){S_SYS_AUTOLOGIN, 2, st.autologin ? 0 : 1, av, an};
 	int r = options_screen(T(S_SYS_TITLE), T(S_SYS_TEXT), o, n);
 	st.spin = o[0].sel == nspins ? -1 : o[0].sel;
 	st.nonfree = o[1].sel == 0;
 	if (prof_dev)
 		st.keep_profile = o[2].sel == 1;
+	st.autologin = o[al].sel == 0;
 	for (int i = 0; i < n; i++) {
 		for (int v = 0; v < o[i].n; v++) {
 			free(o[i].values[v]);
@@ -1522,6 +1545,7 @@ static int scr_summary(int dir)
 		{S_SUM_DESKTOP, xstrdup(st.spin >= 0 ? spins[st.spin].name : T(S_SYS_CONSOLE))},
 		{S_SUM_NONFREE, xstrdup(T(st.nonfree ? S_ON : S_OFF))},
 		{S_SUM_PROFILE, xstrdup(chosen_profile() ? chosen_profile() : prof_cur ? prof_cur : "-")},
+		{S_SUM_AUTOLOGIN, xstrdup(T(st.autologin ? S_AUTOLOGIN_YES : S_AUTOLOGIN_NO))},
 	};
 	int lw = 0;
 	for (size_t i = 0; i < ARRAY_LEN(rows); i++)
@@ -1713,6 +1737,8 @@ static int run_installer(struct tail *t)
 	strv_push(&a, rf);
 	strv_push(&a, "--user-password-file");
 	strv_push(&a, uf);
+	if (st.autologin)
+		strv_push(&a, "--autologin");
 	if (st.spin >= 0) {
 		strv_push(&a, "--spin");
 		strv_push(&a, spins[st.spin].name);
@@ -2003,6 +2029,8 @@ int main(int argc, char **argv)
 	load_zones();
 	load_profiles();
 	load_medium();
+	/* handhelds log in by itself: the device's profile (when it is used) or the image's */
+	st.autologin = profile_handheld(prof_dev);
 	char *lt = realpath("/etc/localtime", NULL);
 	const char *z = lt ? strstr(lt, "zoneinfo/") : NULL;
 	if (z && valid_zone(z + 9))

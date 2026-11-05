@@ -68,7 +68,7 @@ image when the profile says so). No disk encryption: the base system has none. C
 | 3 | Часовой пояс | часть света → город (из `zone.tab` tzdata) или UTC; поиск по мере набора, и по-русски, и латиницей |
 | 4 | Диск | все диски с размером, моделью, шиной и тем, что на них сейчас (`ntfs, vfat`…); носитель установки, занятые и меньше 3.5 GiB выбрать нельзя |
 | 5 | Пользователь | имя компьютера, имя пользователя (в `wheel`), пароль дважды; root получает тот же пароль |
-| 6 | Система | **рабочий стол** — спины с флешки (`labwc`) или «нет (консоль)»; **проприетарные драйверы** — включены/выключены (`ALLOW_NONFREE`); **профиль** — если `burn profile detect` узнал устройство |
+| 6 | Система | **рабочий стол** — спины с флешки (`labwc`) или «нет (консоль)»; **проприетарные драйверы** — включены/выключены (`ALLOW_NONFREE`); **профиль** — если `burn profile detect` узнал устройство; **автоматический вход** — пользователь входит на tty1 сам и рабочий стол открывается сразу (по умолчанию включён для портативных консолей: у их профиля есть `handheld`) |
 | 7 | Итог | сводка; «Установить» → «Стереть диск?» (по умолчанию — «Назад») |
 | 8 | Установка | шаги, «Копирование системы: 45% · 1.1 GiB из 2.4 GiB», полоса и хвост журнала; затем перезагрузить, выключить или выйти в консоль |
 
@@ -92,6 +92,7 @@ image when the profile says so). No disk encryption: the base system has none. C
 ```sh
 cleanlinux-install /dev/nvme0n1                      # спросит подтверждение и пароль root
 cleanlinux-install --user anna --hostname deck --spin labwc /dev/sda   # с рабочим столом labwc
+cleanlinux-install --user anna --autologin --spin labwc /dev/mmcblk0   # консоль: вход и рабочий стол сами
 cleanlinux-install --no-nonfree /dev/sda             # только свободное ПО (ALLOW_NONFREE=0)
 cleanlinux-install --dry-run /dev/sda                # показать план, ничего не меняя
 cleanlinux-install --timezone Europe/Moscow --keymap ruwin_alt_sh-UTF-8 --font cyr-sun16 /dev/sda
@@ -119,6 +120,7 @@ cleanlinux-install --clone -p "base linux" /dev/sda  # пакетами burn clo
 | `--profile NAME` | профиль устройства для `burn update` (иначе подсказка из `burn profile detect`) |
 | `--hostname`, `--user`, `--timezone`, `--keymap`, `--font`, `--cmdline` | имя, пользователь, пояс, консоль, доп. аргументы ядра |
 | `--root-password-file`, `--user-password-file` | пароли из файлов (`-` — stdin) для автоматизации |
+| `--autologin` | пользователь (`--user`) входит на tty1 сам, без пароля: `/etc/cleanlinux/autologin` для getty из cleanlinux-boot 0.5.1 (`cleanlinux.autologin=0` в строке ядра отключает) |
 | `-t DIR`, `--esp-size MiB`, `--keep-mounted`, `--no-efi-entry`, `-y`, `-n` | цель, ESP, не отмонтировать, без записи NVRAM, без вопросов, пробный запуск |
 
 ## Откуда берётся система

@@ -5,7 +5,7 @@
 #   make install         DESTDIR=... PREFIX=/usr
 #   make dist            cleanlinux-install-VERSION.tar.gz from git HEAD
 
-VERSION := 0.7.1
+VERSION := 0.8.0
 PREFIX ?= /usr
 BINDIR ?= $(PREFIX)/bin
 

@@ -494,12 +494,13 @@ char *conf_get(const char *text, const char *key)
 	return val;
 }
 
-char *detected_profile(const char *out)
+char *kv_value(const char *out, const char *key)
 {
+	size_t kl = strlen(key);
 	for (const char *p = out; p && *p;) {
 		size_t len = strcspn(p, "\n");
-		if (len > 7 && !strncmp(p, "profile", 7) && (p[7] == ' ' || p[7] == '\t')) {
-			const char *v = p + 7, *end = p + len;
+		if (len > kl && !strncmp(p, key, kl) && (p[kl] == ' ' || p[kl] == '\t')) {
+			const char *v = p + kl, *end = p + len;
 			while (v < end && (*v == ' ' || *v == '\t'))
 				v++;
 			while (end > v && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r'))
@@ -511,6 +512,21 @@ char *detected_profile(const char *out)
 			p++;
 	}
 	return NULL;
+}
+
+char *detected_profile(const char *out) { return kv_value(out, "profile"); }
+
+bool has_word(const char *list, const char *word)
+{
+	size_t wl = strlen(word);
+	for (const char *p = list; p && *p;) {
+		p += strspn(p, " \t");
+		size_t len = strcspn(p, " \t");
+		if (len == wl && !strncmp(p, word, wl))
+			return true;
+		p += len;
+	}
+	return false;
 }
 
 char *cmdline_text(const char *root, const char *rootflags, const char *extra)

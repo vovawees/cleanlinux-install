@@ -65,6 +65,11 @@ enum {
 	S_PROFILE_KEEP,
 	S_PROFILE_NOTE,
 	S_PROFILE_NOTE_KEEP,
+	S_SYS_AUTOLOGIN,
+	S_AUTOLOGIN_YES,
+	S_AUTOLOGIN_NO,
+	S_AUTOLOGIN_YES_NOTE,
+	S_AUTOLOGIN_NO_NOTE,
 	S_SUM_TITLE,
 	S_SUM_DISK,
 	S_SUM_KEYMAP,
@@ -74,6 +79,7 @@ enum {
 	S_SUM_DESKTOP,
 	S_SUM_NONFREE,
 	S_SUM_PROFILE,
+	S_SUM_AUTOLOGIN,
 	S_SUM_WARN,
 	S_INSTALL,
 	S_CONFIRM_TITLE,
@@ -219,6 +225,17 @@ static const char *const strings[S_COUNT][2] = {
 				 "keeps it so.",
 				 "Профиль образа: система работает на любом таком компьютере; burn update так "
 				 "её и оставит."},
+	[S_SYS_AUTOLOGIN] = {"Automatic login", "Автоматический вход"},
+	[S_AUTOLOGIN_YES] = {"on", "включён"},
+	[S_AUTOLOGIN_NO] = {"off", "выключен"},
+	[S_AUTOLOGIN_YES_NOTE] = {"%s logs in on the screen by itself and the desktop starts at once: a handheld "
+				  "has no keyboard for a password. The password stays for administration (root, "
+				  "polkit) and the other consoles.",
+				  "%s входит сам, и рабочий стол открывается сразу: у портативной консоли нет "
+				  "клавиатуры для пароля. Пароль остаётся для администрирования (root, polkit) "
+				  "и других консолей."},
+	[S_AUTOLOGIN_NO_NOTE] = {"The login asks for the name and the password; the desktop starts after it.",
+				 "При входе спрашиваются имя и пароль; рабочий стол открывается после входа."},
 	[S_SUM_TITLE] = {"Ready to install", "Всё готово к установке"},
 	[S_SUM_DISK] = {"Disk", "Диск"},
 	[S_SUM_KEYMAP] = {"Keyboard", "Клавиатура"},
@@ -228,6 +245,7 @@ static const char *const strings[S_COUNT][2] = {
 	[S_SUM_DESKTOP] = {"Desktop", "Рабочий стол"},
 	[S_SUM_NONFREE] = {"Proprietary drivers", "Проприетарные драйверы"},
 	[S_SUM_PROFILE] = {"Profile", "Профиль"},
+	[S_SUM_AUTOLOGIN] = {"Automatic login", "Автоматический вход"},
 	[S_SUM_WARN] = {"ALL DATA ON %s WILL BE ERASED.", "ВСЕ ДАННЫЕ НА %s БУДУТ СТЁРТЫ."},
 	[S_INSTALL] = {"Install", "Установить"},
 	[S_CONFIRM_TITLE] = {"Erase the disk?", "Стереть диск?"},
