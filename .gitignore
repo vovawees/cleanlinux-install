@@ -2,3 +2,5 @@
 /cleanlinux-install
 /tests/unit
 /cleanlinux-install-*.tar.gz
+/cleanlinux-setup
+__pycache__/

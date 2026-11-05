@@ -60,7 +60,32 @@ char *luks_uuid_of_dm(const char *dm_uuid);
 char *luks_mapper(const char *luks_uuid);
 bool valid_hostname(const char *s);
 bool valid_username(const char *s);
+bool valid_zone(const char *s);         /* Europe/Moscow, America/Argentina/Buenos_Aires, UTC */
+bool valid_console_name(const char *s); /* a keymap or console font of kbd: us, ruwin_alt_sh-UTF-8 */
 char *size_text(uint64_t bytes);
+
+/* the progress of an installation, from the lines cleanlinux-install (and burn clone) print */
+enum {
+	STEP_NONE,
+	STEP_DISK,
+	STEP_PARTITION,
+	STEP_ENCRYPT,
+	STEP_FORMAT,
+	STEP_MOUNT,
+	STEP_PACKAGES,
+	STEP_CONFIG,
+	STEP_USERS,
+	STEP_BOOT,
+	STEP_UNMOUNT,
+	STEP_DONE,
+};
+struct progress {
+	int percent, step, pkgs, pkgs_done;
+	char pkg[64]; /* the package being installed */
+};
+void progress_line(struct progress *p, const char *line);
+/* LINE without terminal escapes (colors) and trailing blanks, tabs as spaces, in OUT */
+void plain_line(char *out, size_t cap, const char *line);
 
 /* system.c: what touches the machine */
 struct disk {
@@ -86,5 +111,7 @@ char *hash_password(const char *pw);
 char *ask_password(const char *who, const char *option);
 char *read_password_file(const char *path);
 bool ask_yes(const char *question);
+/* the file of a keymap or console font of kbd under ROOT (KIND: keymaps, consolefonts), or NULL */
+char *kbd_file(const char *root, const char *kind, const char *name);
 
 #endif

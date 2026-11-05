@@ -563,3 +563,107 @@ char *size_text(uint64_t bytes)
 		return xasprintf("%.1f GiB", (double)bytes / (double)(1ULL << 30));
 	return xasprintf("%llu MiB", (unsigned long long)(bytes >> 20));
 }
+
+bool valid_zone(const char *s)
+{
+	size_t n = strlen(s);
+	if (!n || n > 64 || s[0] == '/' || s[0] == '-' || s[n - 1] == '/')
+		return false;
+	for (const char *p = s; *p; p++) {
+		if (!isalnum((unsigned char)*p) && !strchr("/_+-", *p))
+			return false;
+		if (p[0] == '/' && p[1] == '/')
+			return false;
+	}
+	return true;
+}
+
+bool valid_console_name(const char *s)
+{
+	size_t n = strlen(s);
+	if (!n || n > 64 || s[0] == '-' || s[0] == '.')
+		return false;
+	for (const char *p = s; *p; p++)
+		if (!isalnum((unsigned char)*p) && !strchr("_.+-", *p))
+			return false;
+	return true;
+}
+
+/* the line without terminal colours and the trailing blanks */
+void plain_line(char *out, size_t cap, const char *line)
+{
+	size_t n = 0;
+	for (const char *p = line; *p && n + 1 < cap; p++) {
+		if (*p == '\033') {
+			if (p[1] == '[') {
+				p += 2;
+				while (*p && !(*p >= 0x40 && *p <= 0x7e))
+					p++;
+				if (!*p)
+					break;
+			}
+			continue;
+		}
+		out[n++] = *p == '\t' ? ' ' : *p;
+	}
+	while (n && (out[n - 1] == ' ' || out[n - 1] == '\r' || out[n - 1] == '\n' || out[n - 1] == '\t'))
+		n--;
+	out[n] = '\0';
+}
+
+void progress_line(struct progress *p, const char *line)
+{
+	static const struct {
+		const char *prefix;
+		int step, percent;
+	} steps[] = {
+		{":: Disk", STEP_DISK, 1},
+		{":: Partitioning", STEP_PARTITION, 4},
+		{":: Encrypting", STEP_ENCRYPT, 6},
+		{":: Formatting", STEP_FORMAT, 8},
+		{":: Mounting", STEP_MOUNT, 10},
+		{":: Installing the packages", STEP_PACKAGES, 12},
+		{":: Configuring", STEP_CONFIG, 89},
+		{":: Time zone", STEP_CONFIG, 90},
+		{":: Users", STEP_USERS, 92},
+		{":: Services", STEP_USERS, 94},
+		{":: Kernel and boot loader", STEP_BOOT, 96},
+		{":: Unmounting", STEP_UNMOUNT, 99},
+		{":: Done", STEP_DONE, 100},
+	};
+	char l[512];
+	plain_line(l, sizeof(l), line);
+	int percent = p->percent;
+	for (size_t i = 0; i < ARRAY_LEN(steps); i++)
+		if (str_prefix(l, steps[i].prefix)) {
+			p->step = steps[i].step;
+			percent = steps[i].percent;
+			break;
+		}
+	/* burn clone: "==> Packages (N): ..." once, then "==> Installing NAME VERSION" for each */
+	if (p->step == STEP_PACKAGES) {
+		unsigned n;
+		if (sscanf(l, "==> Packages (%u)", &n) == 1) {
+			p->pkgs = (int)n;
+			p->pkgs_done = 0;
+		}
+		static const char *const verbs[] = {"==> Installing ", "==> Upgrading ", "==> Rebuilding ", "==> Downgrading "};
+		for (size_t i = 0; i < ARRAY_LEN(verbs); i++)
+			if (str_prefix(l, verbs[i])) {
+				const char *name = l + strlen(verbs[i]);
+				size_t len = strcspn(name, " ");
+				if (len >= sizeof(p->pkg))
+					len = sizeof(p->pkg) - 1;
+				memcpy(p->pkg, name, len);
+				p->pkg[len] = '\0';
+				p->pkgs_done++;
+				if (p->pkgs > 0) {
+					int done = p->pkgs_done < p->pkgs ? p->pkgs_done : p->pkgs;
+					percent = 12 + 76 * done / p->pkgs;
+				}
+				break;
+			}
+	}
+	if (percent > p->percent)
+		p->percent = percent;
+}

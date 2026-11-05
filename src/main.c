@@ -8,7 +8,8 @@
  *
  * The packages are the very builds the running system has installed (burn clone, from the
  * package cache, nothing is built); then fstab by PARTUUID, the kernel command line, hostname,
- * passwords and a user, network services, the kernel for the boot loader of the device in the ESP
+ * passwords and a user, the time zone and the console's keymap and font, network services, the
+ * kernel for the boot loader of the device in the ESP
  * (systemd-boot and an EFI boot entry; U-Boot extlinux, the Raspberry Pi firmware or an Android
  * boot image when the profile says so). An encrypted root gets an initramfs (cleanlinux-boot) that
  * opens it: rd.luks.uuid= on the kernel command line, dm-crypt and cryptsetup inside. No desktop or
@@ -50,6 +51,7 @@
 
 static struct {
 	const char *disk, *target, *hostname, *user, *root_pw_file, *user_pw_file, *luks_pw_file, *profile, *cmdline;
+	const char *timezone, *keymap, *font;
 	strv packages;
 	unsigned esp_mib;
 	bool yes, dry_run, keep_mounted, no_efi_entry, target_given, encrypt;
@@ -110,6 +112,11 @@ static _Noreturn void usage(int code)
 		   "  -p, --packages \"A B\"        clone only these packages and their dependencies\n"
 		   "                              (default: every package of the running system)\n"
 		   "  -P, --profile NAME          the burn profile of the new system (default: the running one)\n"
+		   "      --timezone ZONE         the time zone: Europe/Moscow, America/New_York, UTC\n"
+		   "                              (/etc/localtime; default: that of the running system)\n"
+		   "      --keymap MAP            the console keymap of kbd: us, de-latin1, ruwin_alt_sh-UTF-8\n"
+		   "      --font FONT             the console font of kbd: latarcyrheb-sun16, lat2-16\n"
+		   "                              (both in /etc/vconsole.conf)\n"
 		   "      --cmdline \"ARGS\"        more kernel arguments (root= and rootflags= are written)\n"
 		   "      --esp-size MIB          size of the EFI system partition (default 512)\n"
 		   "      --no-efi-entry          do not add an EFI boot entry (the fallback loader still boots)\n"
@@ -392,6 +399,74 @@ static void write_config(const fsents *fstab)
 	free(p);
 }
 
+/* /etc/localtime and /etc/vconsole.conf: the choices, else those of the running system */
+static void console_config(void)
+{
+	char *lt_live = NULL;
+	char buf[4096];
+	ssize_t n = readlink("/etc/localtime", buf, sizeof(buf) - 1);
+	if (n > 0) {
+		buf[n] = '\0';
+		const char *z = strstr(buf, "zoneinfo/");
+		if (z && valid_zone(z + 9))
+			lt_live = xstrdup(z + 9);
+	}
+	const char *zone = o.timezone ? o.timezone : lt_live;
+	char *vc_live = read_file("/etc/vconsole.conf", NULL);
+	if (!zone && !o.keymap && !o.font && !vc_live) {
+		free(lt_live);
+		return;
+	}
+	msg("Time zone and console");
+	if (zone) {
+		char *rel = xasprintf("../usr/share/zoneinfo/%s", zone), *zi = xasprintf("/usr/share/zoneinfo/%s", zone);
+		char *zp = tpath(zi), *lt = tpath("/etc/localtime");
+		if (!o.dry_run && !is_file(zp)) {
+			warnx("the time zone %s is not in the new system (%s; the tzdata package): the clock stays in UTC",
+			      zone, zi);
+		} else {
+			info("time zone %s: /etc/localtime -> %s", zone, rel);
+			if (!o.dry_run) {
+				if (unlink(lt) < 0 && errno != ENOENT)
+					die_errno("unlink %s", lt);
+				if (symlink(rel, lt) < 0)
+					die_errno("symlink %s", lt);
+			}
+		}
+		free(rel);
+		free(zi);
+		free(zp);
+		free(lt);
+	}
+	if (o.keymap || o.font || vc_live) {
+		char *p = tpath("/etc/vconsole.conf");
+		char *text = vc_live ? xstrdup(vc_live) : read_file(p, NULL);
+		if (!text)
+			text = xstrdup("# the keymap and font of the console (cleanlinux-boot vconsole)\n");
+		static const char *const kinds[][2] = {{"KEYMAP", "keymaps"}, {"FONT", "consolefonts"}};
+		const char *vals[] = {o.keymap, o.font};
+		for (size_t i = 0; i < ARRAY_LEN(vals); i++) {
+			if (!vals[i])
+				continue;
+			char *f = o.dry_run ? NULL : kbd_file(o.target, kinds[i][1], vals[i]);
+			char *dir = xasprintf("%s/usr/share/kbd/%s", o.target, kinds[i][1]);
+			if (!o.dry_run && !f && is_dir(dir))
+				warnx("%s %s: kbd has no such %s in the new system", kinds[i][0], vals[i],
+				      i ? "font" : "keymap");
+			free(dir);
+			free(f);
+			char *t = conf_set(text, kinds[i][0], vals[i]);
+			free(text);
+			text = t;
+		}
+		put_file(p, text, 0644, true);
+		free(text);
+		free(p);
+	}
+	free(vc_live);
+	free(lt_live);
+}
+
 static void set_password(const char *user, const char *hash)
 {
 	char *p = tpath("/etc/shadow");
@@ -609,7 +684,8 @@ static char *get_password(const char *who, const char *file)
 
 int main(int argc, char **argv)
 {
-	enum { OPT_ROOT_PW = 256, OPT_USER_PW, OPT_LUKS, OPT_LUKS_PW, OPT_CMDLINE, OPT_ESP, OPT_NO_EFI, OPT_KEEP };
+	enum { OPT_ROOT_PW = 256, OPT_USER_PW, OPT_LUKS, OPT_LUKS_PW, OPT_CMDLINE, OPT_ESP, OPT_NO_EFI, OPT_KEEP, OPT_TZ,
+	       OPT_KEYMAP, OPT_FONT };
 	static const struct option longopts[] = {
 		{"target", required_argument, NULL, 't'},
 		{"hostname", required_argument, NULL, 'H'},
@@ -620,6 +696,9 @@ int main(int argc, char **argv)
 		{"encrypt-password-file", required_argument, NULL, OPT_LUKS_PW},
 		{"packages", required_argument, NULL, 'p'},
 		{"profile", required_argument, NULL, 'P'},
+		{"timezone", required_argument, NULL, OPT_TZ},
+		{"keymap", required_argument, NULL, OPT_KEYMAP},
+		{"font", required_argument, NULL, OPT_FONT},
 		{"cmdline", required_argument, NULL, OPT_CMDLINE},
 		{"esp-size", required_argument, NULL, OPT_ESP},
 		{"no-efi-entry", no_argument, NULL, OPT_NO_EFI},
@@ -642,6 +721,9 @@ int main(int argc, char **argv)
 		case OPT_LUKS_PW: o.luks_pw_file = optarg; break;
 		case 'p': strv_split(&o.packages, optarg); break;
 		case 'P': o.profile = optarg; break;
+		case OPT_TZ: o.timezone = optarg; break;
+		case OPT_KEYMAP: o.keymap = optarg; break;
+		case OPT_FONT: o.font = optarg; break;
 		case OPT_CMDLINE: o.cmdline = optarg; break;
 		case OPT_ESP: {
 			char *end;
@@ -668,6 +750,12 @@ int main(int argc, char **argv)
 		die("--hostname %s: letters, digits, '-' and '.', up to 64", o.hostname);
 	if (o.user && !valid_username(o.user))
 		die("--user %s: lower case letters, digits, '_' and '-', starting with a letter, up to 32", o.user);
+	if (o.timezone && !valid_zone(o.timezone))
+		die("--timezone %s: a zone of tzdata such as Europe/Berlin or UTC", o.timezone);
+	if (o.keymap && !valid_console_name(o.keymap))
+		die("--keymap %s: the name of a kbd keymap such as us or de-latin1", o.keymap);
+	if (o.font && !valid_console_name(o.font))
+		die("--font %s: the name of a kbd console font such as lat2-16", o.font);
 	if (o.user_pw_file && !o.user)
 		die("--user-password-file needs --user");
 	if (o.luks_pw_file && !o.encrypt)
@@ -720,6 +808,9 @@ int main(int argc, char **argv)
 	}
 	if (o.profile)
 		info("burn profile %s", o.profile);
+	if (o.timezone || o.keymap || o.font)
+		info("time zone %s, keymap %s, font %s", o.timezone ? o.timezone : "-", o.keymap ? o.keymap : "-",
+		     o.font ? o.font : "-");
 	if (o.encrypt)
 		info("the root encrypted: LUKS2, the passphrase is asked at boot");
 	if (o.disk && !o.yes && !o.dry_run) {
@@ -847,6 +938,7 @@ int main(int argc, char **argv)
 		free(cs);
 	}
 	write_config(&fstab);
+	console_config();
 	users(root_hash, user_hash);
 	services();
 	bootloader(esp, esp_dev, esp_spec, luks != NULL);

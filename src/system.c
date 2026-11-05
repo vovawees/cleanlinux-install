@@ -8,6 +8,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <glob.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <linux/btrfs.h>
@@ -466,4 +467,34 @@ bool ask_yes(const char *question)
 	bool yes = !strcmp(trim(a), "yes");
 	free(a);
 	return yes;
+}
+
+char *kbd_file(const char *root, const char *kind, const char *name)
+{
+	static const char *const map_dirs[] = {"", "*/", "*/*/", "*/*/*/"};
+	static const char *const map_ext[] = {".map.gz", ".map", ".map.xz", ".map.zst", ".map.bz2"};
+	static const char *const font_ext[] = {".psfu.gz", ".psf.gz", ".psfu", ".psf", ".gz", ".cp.gz", ""};
+	if (!valid_console_name(name))
+		return NULL;
+	const char *r = root && strcmp(root, "/") ? root : "";
+	bool maps = !strcmp(kind, "keymaps");
+	size_t nd = maps ? ARRAY_LEN(map_dirs) : 1, ne = maps ? ARRAY_LEN(map_ext) : ARRAY_LEN(font_ext);
+	for (size_t d = 0; d < nd; d++)
+		for (size_t e = 0; e < ne; e++) {
+			char *pat = xasprintf("%s/usr/share/kbd/%s/%s%s%s", r, kind, maps ? map_dirs[d] : "", name,
+					      maps ? map_ext[e] : font_ext[e]);
+			glob_t g;
+			int gr = glob(pat, 0, NULL, &g);
+			free(pat);
+			if (gr != 0)
+				continue;
+			char *found = NULL;
+			for (size_t i = 0; i < g.gl_pathc && !found; i++)
+				if (is_file(g.gl_pathv[i]))
+					found = xstrdup(g.gl_pathv[i]);
+			globfree(&g);
+			if (found)
+				return found;
+		}
+	return NULL;
 }

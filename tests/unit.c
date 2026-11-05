@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: MIT */
-/* Unit tests of the pure parts of the installer (src/plan.c). */
+/* Unit tests of the pure parts of the installer (src/plan.c) and of the TUI (text in src/tui.c). */
 #define _GNU_SOURCE
 #include "install.h"
+#include "tui.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -192,6 +193,71 @@ int main(void)
 	      "user names");
 	check_str("size GiB", size_text(20ULL << 30), "20.0 GiB");
 	check_str("size MiB", size_text(512ULL << 20), "512 MiB");
+
+	/* time zones and console names (written into /etc/localtime and /etc/vconsole.conf) */
+	CHECK(valid_zone("Europe/Moscow") && valid_zone("UTC") && valid_zone("America/Argentina/Buenos_Aires") &&
+		      valid_zone("Etc/GMT+3") && valid_zone("America/Port-au-Prince"),
+	      "zones");
+	CHECK(!valid_zone("") && !valid_zone("/etc/passwd") && !valid_zone("../x") && !valid_zone("Europe/") &&
+		      !valid_zone("Europe//Moscow") && !valid_zone("-x") && !valid_zone("a b") && !valid_zone("Europe/.."),
+	      "bad zones");
+	CHECK(!valid_zone("Europe/../../etc"), "zone with ..");
+	CHECK(valid_console_name("us") && valid_console_name("ruwin_alt_sh-UTF-8") && valid_console_name("ter-v16n") &&
+		      valid_console_name("latarcyrheb-sun16"),
+	      "console names");
+	CHECK(!valid_console_name("") && !valid_console_name("../us") && !valid_console_name("a/b") &&
+		      !valid_console_name("-us") && !valid_console_name(".x") && !valid_console_name("a b"),
+	      "bad console names");
+
+	/* the progress of an installation from the installer's output */
+	struct progress pr = {0};
+	progress_line(&pr, "\033[1;36m::\033[0m Disk /dev/vdb (8.0 GiB)");
+	CHECK(pr.step == STEP_DISK && pr.percent == 1, "progress disk %d %d", pr.step, pr.percent);
+	progress_line(&pr, ":: Partitioning /dev/vdb");
+	progress_line(&pr, ":: Formatting");
+	CHECK(pr.step == STEP_FORMAT && pr.percent == 8, "progress format");
+	progress_line(&pr, ":: Installing the packages");
+	CHECK(pr.step == STEP_PACKAGES && pr.percent == 12, "progress packages");
+	progress_line(&pr, "==> Packages (4): a b c d");
+	CHECK(pr.pkgs == 4 && pr.pkgs_done == 0, "progress package count %d", pr.pkgs);
+	progress_line(&pr, "==> Installing glibc 2.42-1");
+	CHECK(pr.pkgs_done == 1 && !strcmp(pr.pkg, "glibc") && pr.percent == 12 + 76 / 4, "progress package 1: %d %s",
+	      pr.percent, pr.pkg);
+	progress_line(&pr, "\033[1m==> Installing linux 6.17.7-13\033[0m");
+	CHECK(pr.pkgs_done == 2 && !strcmp(pr.pkg, "linux") && pr.percent == 12 + 76 * 2 / 4, "progress package 2: %s",
+	      pr.pkg);
+	progress_line(&pr, "some output of a hook");
+	CHECK(pr.percent == 50 && pr.step == STEP_PACKAGES, "progress: other lines keep it");
+	progress_line(&pr, "==> Installing x 1");
+	progress_line(&pr, "==> Installing y 1");
+	progress_line(&pr, "==> Installing z 1");
+	CHECK(pr.pkgs_done == 5 && pr.percent == 88, "progress: never past the packages share: %d", pr.percent);
+	progress_line(&pr, ":: Users");
+	CHECK(pr.step == STEP_USERS && pr.percent == 92, "progress users");
+	progress_line(&pr, ":: Partitioning");
+	CHECK(pr.percent == 92, "progress never goes back");
+	progress_line(&pr, ":: Done: CleanLinux is installed on /dev/vdb");
+	CHECK(pr.step == STEP_DONE && pr.percent == 100, "progress done");
+
+	/* UTF-8 and wrapping (columns = code points) */
+	const char *u = "aЖ€😀";
+	const char *up = u;
+	CHECK(utf8_next(&up) == 'a' && utf8_next(&up) == 0x416 && utf8_next(&up) == 0x20ac && utf8_next(&up) == 0x1f600 &&
+		      !*up,
+	      "utf8_next");
+	const char *bad = "\xff" "b";
+	CHECK(utf8_next(&bad) == 0xfffd && *bad == 'b', "utf8_next: a bad byte");
+	CHECK(utf8_len(u) == 4 && utf8_len("") == 0, "utf8_len");
+	CHECK(utf8_prefix(u, 2) == 3 && utf8_prefix(u, 10) == strlen(u), "utf8_prefix");
+	char ub[4];
+	CHECK(utf8_put(0x416, ub) == 2 && (unsigned char)ub[0] == 0xd0 && (unsigned char)ub[1] == 0x96, "utf8_put");
+	check_str("wrap", text_wrap("Все данные на диске будут удалены", 12), "Все данные\nна диске\nбудут\nудалены");
+	check_str("wrap paragraphs", text_wrap("one two\n\nthree", 20), "one two\n\nthree");
+	check_str("wrap long word", text_wrap("abcdefghij", 4), "abcd\nefgh\nij");
+	check_str("wrap spaces", text_wrap("  a   b  ", 10), "  a   b");
+	check_str("wrap table", text_wrap("Disk:     /dev/vdb  20 GiB\nUser:     anna", 40),
+		  "Disk:     /dev/vdb  20 GiB\nUser:     anna");
+	check_str("wrap at spaces", text_wrap("aaaa    bbbb cc", 8), "aaaa\nbbbb cc");
 
 	printf("unit: %d checks, %d failed\n", checks, failed);
 	return failed != 0;

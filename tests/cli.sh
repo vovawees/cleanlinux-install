@@ -54,6 +54,12 @@ if ci -n --root-password-file - --encrypt --encrypt-password-file - /dev/null 2>
 	fail "two passwords from stdin"
 fi
 grep -q 'only one password can come from stdin' "$tmp/err" || fail "stdin message: $(cat "$tmp/err")"
+if ci -n --timezone ../../etc/passwd /dev/null 2>"$tmp/err"; then fail "bad time zone"; fi
+grep -q 'timezone ../../etc/passwd: a zone of tzdata' "$tmp/err" || fail "time zone message: $(cat "$tmp/err")"
+if ci -n --keymap 'us/../x' /dev/null 2>"$tmp/err"; then fail "bad keymap"; fi
+grep -q 'keymap us/../x' "$tmp/err" || fail "keymap message: $(cat "$tmp/err")"
+if ci -n --font '-x' /dev/null 2>"$tmp/err"; then fail "bad font"; fi
+grep -q 'font -x' "$tmp/err" || fail "font message: $(cat "$tmp/err")"
 
 # a dry run on a real disk of this machine (read only): the whole plan, nothing runs
 disk=
@@ -77,6 +83,15 @@ if [ -n "$disk" ]; then
 	done
 	[ ! -e "$tmp/ran" ] || fail "dry run ran: $(cat "$tmp/ran")"
 	[ ! -e "$tmp/target" ] || fail "dry run created the target"
+	# the time zone and the console of the new system
+	ci -n -y -t "$tmp/target" --timezone Europe/Moscow --keymap ruwin_alt_sh-UTF-8 --font cyr-sun16 "$disk" \
+		>"$tmp/out" 2>&1 || fail "dry run with a time zone: $(cat "$tmp/out")"
+	for want in 'time zone Europe/Moscow, keymap ruwin_alt_sh-UTF-8, font cyr-sun16' \
+		'time zone Europe/Moscow: /etc/localtime -> ../usr/share/zoneinfo/Europe/Moscow' \
+		"write $tmp/target/etc/vconsole.conf" 'KEYMAP=ruwin_alt_sh-UTF-8' 'FONT=cyr-sun16'; do
+		grep -qF -- "$want" "$tmp/out" || fail "time zone dry run: no '$want' in: $(cat "$tmp/out")"
+	done
+	[ ! -e "$tmp/ran" ] || fail "time zone dry run ran: $(cat "$tmp/ran")"
 	# the same with the root in LUKS2
 	ci -n -y -t "$tmp/target" --encrypt -p "base linux" "$disk" >"$tmp/out" 2>&1 ||
 		fail "encrypted dry run on $disk: $(cat "$tmp/out")"
