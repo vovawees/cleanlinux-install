@@ -7,3 +7,4 @@ recipe linguist-language=Shell
 *.profile linguist-language=Shell
 spin.conf linguist-language=Shell
 tests/fixtures/** linguist-vendored
+docs/screens export-ignore
