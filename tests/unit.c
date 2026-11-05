@@ -1,12 +1,19 @@
 /* SPDX-License-Identifier: MIT */
-/* Unit tests of the pure parts of the installer (src/plan.c) and of the TUI (text in src/tui.c). */
+/* Unit tests of the pure parts of the installer (src/plan.c), of the copy of system trees
+ * (src/copy.c, in a temporary directory) and of the TUI (text in src/tui.c). */
 #define _GNU_SOURCE
 #include "install.h"
 #include "tui.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 static int checks, failed;
 
@@ -40,6 +47,96 @@ static char *fake_spec(const char *dev, void *ctx)
 	if (!strcmp(dev, "/dev/nvme0n1p1"))
 		return xstrdup("PARTUUID=1111");
 	return NULL;
+}
+
+static void put(const char *path, const char *text, mode_t mode)
+{
+	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+	if (fd < 0 || write(fd, text, strlen(text)) != (ssize_t)strlen(text))
+		fprintf(stderr, "cannot write %s: %s\n", path, strerror(errno));
+	if (fd >= 0)
+		close(fd);
+	chmod(path, mode);
+}
+
+static char *got(const char *path)
+{
+	return read_file(path, NULL);
+}
+
+static void progress_cb(uint64_t bytes, uint64_t entries, void *ctx)
+{
+	(void)bytes;
+	*(uint64_t *)ctx = entries;
+}
+
+/* tree_copy: files, modes, times, symbolic and hard links, directories merged, whiteouts (with
+ * the right to make device nodes) */
+static void test_tree_copy(void)
+{
+	char tmpl[] = "/tmp/cli-unit.XXXXXX";
+	char *t = mkdtemp(tmpl);
+	CHECK(t != NULL, "mkdtemp");
+	if (!t)
+		return;
+	char *src = xasprintf("%s/src", t), *dst = xasprintf("%s/dst", t), *p;
+#define P(...) (free(p), p = xasprintf(__VA_ARGS__))
+	p = NULL;
+	mkdir(src, 0755);
+	mkdir(dst, 0755);
+	mkdir(P("%s/etc", src), 0755);
+	put(P("%s/etc/hostname", src), "cleanlinux-live\n", 0644);
+	put(P("%s/etc/shadow", src), "root::1::::::\n", 0600);
+	mkdir(P("%s/usr", src), 0755);
+	mkdir(P("%s/usr/bin", src), 0711);
+	put(P("%s/usr/bin/tool", src), "#!/bin/sh\n", 0755);
+	char *a1 = xasprintf("%s/usr/bin/tool", src), *a2 = xasprintf("%s/usr/bin/tool2", src);
+	CHECK(link(a1, a2) == 0, "link");
+	free(a1);
+	free(a2);
+	CHECK(symlink("tool", P("%s/usr/bin/t", src)) == 0, "symlink");
+	struct timeval tv[2] = {{1000000000, 0}, {1000000000, 0}};
+	utimes(P("%s/etc/hostname", src), tv);
+	/* what DST has: merged with, or removed by a whiteout */
+	mkdir(P("%s/etc", dst), 0755);
+	put(P("%s/etc/keep", dst), "kept\n", 0644);
+	put(P("%s/etc/hostname", dst), "old\n", 0644);
+	put(P("%s/etc/gone", dst), "x\n", 0644);
+	bool whiteout = mknod(P("%s/etc/gone", src), S_IFCHR | 0000, makedev(0, 0)) == 0;
+
+	uint64_t entries = 0;
+	struct tree_size sz = {0, 0};
+	tree_measure(src, &sz);
+	CHECK(sz.entries >= 7 && sz.bytes == strlen("cleanlinux-live\n") + strlen("root::1::::::\n") + 2 * strlen("#!/bin/sh\n"),
+	      "tree_measure: %llu entries, %llu bytes", (unsigned long long)sz.entries, (unsigned long long)sz.bytes);
+	int fails = tree_copy(src, dst, progress_cb, &entries);
+	CHECK(fails == 0, "tree_copy: %d failed", fails);
+	check_str("copied file", got(P("%s/etc/hostname", dst)), "cleanlinux-live\n");
+	check_str("kept file", got(P("%s/etc/keep", dst)), "kept\n");
+	struct stat s1, s2;
+	CHECK(stat(P("%s/etc/shadow", dst), &s1) == 0 && (s1.st_mode & 07777) == 0600, "mode 0600: %o", s1.st_mode & 07777);
+	CHECK(stat(P("%s/usr/bin", dst), &s1) == 0 && (s1.st_mode & 07777) == 0711, "directory mode: %o", s1.st_mode & 07777);
+	CHECK(stat(P("%s/etc/hostname", dst), &s1) == 0 && s1.st_mtime == 1000000000, "mtime: %lld", (long long)s1.st_mtime);
+	CHECK(stat(P("%s/usr/bin/tool", dst), &s1) == 0 && stat(P("%s/usr/bin/tool2", dst), &s2) == 0 &&
+		      s1.st_ino == s2.st_ino && s1.st_nlink == 2,
+	      "hard link");
+	char lt[16] = "";
+	CHECK(readlink(P("%s/usr/bin/t", dst), lt, sizeof(lt) - 1) == 4 && !strcmp(lt, "tool"), "symlink: %s", lt);
+	if (whiteout)
+		CHECK(lstat(P("%s/etc/gone", dst), &s1) < 0 && errno == ENOENT, "the whiteout removed etc/gone");
+	else
+		printf("unit: no whiteout test (mknod needs root)\n");
+	CHECK(entries > 0, "progress called");
+	/* again over itself: nothing fails */
+	CHECK(tree_copy(src, dst, NULL, NULL) == 0, "tree_copy again");
+	char *rm = xasprintf("rm -rf '%s'", t);
+	if (system(rm) != 0)
+		fprintf(stderr, "cannot remove %s\n", t);
+	free(rm);
+	free(p);
+	free(src);
+	free(dst);
+#undef P
 }
 
 int main(void)
@@ -122,15 +219,6 @@ int main(void)
 		  "PARTUUID=1111 /boot vfat umask=0077,noatime 0 2\n"
 		  "/dev/sdb1 /srv\\040data ext4 defaults 0 2\n");
 	fsents_free(&f);
-	fsents_add(&f, "/dev/mapper/luks-u-1", "/", "btrfs", "subvol=@", 0);
-	check_str("fstab luks", fstab_text(&f),
-		  "# /etc/fstab, written by cleanlinux-install. Partitions by PARTUUID: the names survive\n"
-		  "# reformatting and disk order (ls -l /dev/disk/by-partuuid).\n"
-		  "# <device> <mount point> <type> <options> <dump> <pass>\n"
-		  "# The encrypted root: /dev/mapper/luks-<UUID of the LUKS container>, opened by the\n"
-		  "# initramfs (rd.luks.uuid= on the kernel command line).\n"
-		  "/dev/mapper/luks-u-1 / btrfs subvol=@ 0 0\n");
-	fsents_free(&f);
 	/* an overmounted mount point: the last mount wins */
 	const char *mi2 = "60 1 0:40 / /t rw - ext4 /dev/sda1 rw\n"
 			  "61 60 0:41 / /t/boot rw - vfat /dev/sda2 rw\n"
@@ -151,6 +239,7 @@ int main(void)
 	check_str("shadow short line", shadow_set("root:x\n", "root", "H", 3), "root:H:3:0:99999:7:::\n");
 	check_str("groups none", user_groups("root:x:0:\nwheel:x:97:\n"), "wheel");
 	check_str("groups all", user_groups("seat:x:950:\naudio:x:11:\nvideo:x:12:\nvideox:x:1:\n"), "wheel,audio,video,seat");
+	check_str("groups render input", user_groups("input:x:97:\nrender:x:98:\n"), "wheel,render,input");
 	check_str("groups prefix", user_groups("audiox:x:5:\nxvideo:x:6:\nseat"), "wheel");
 	check_str("groups null", user_groups(NULL), "wheel");
 
@@ -163,29 +252,17 @@ int main(void)
 	check_str("conf get", conf_get("# PROFILE=old\nPROFILE=native\n PROFILE=\"steam-deck\" # mine\n", "PROFILE"),
 		  "steam-deck");
 	check_str("conf get: unset", conf_get("JOBS=4\n", "PROFILE"), NULL);
-	check_str("conf unset", conf_unset("# the ISO's\nFIRMWARE=\"amdgpu/ i915/\"\nJOBS=4\n FIRMWARE=x\n", "FIRMWARE"),
-		  "# the ISO's\n# FIRMWARE=\"amdgpu/ i915/\"\nJOBS=4\n#  FIRMWARE=x\n");
+	check_str("conf unset", conf_unset("# the image's\nFIRMWARE=\"amdgpu/ i915/\"\nJOBS=4\n FIRMWARE=x\n", "FIRMWARE"),
+		  "# the image's\n# FIRMWARE=\"amdgpu/ i915/\"\nJOBS=4\n#  FIRMWARE=x\n");
 	check_str("conf unset: nothing", conf_unset("JOBS=4", "FIRMWARE"), "JOBS=4\n");
 	check_str("detect", detected_profile("arch       x86_64\nmodel      Jupiter\nprofile    steam-deck\n"),
 		  "steam-deck");
 	check_str("detect: none", detected_profile("arch x86_64\n"), NULL);
 
 	/* the kernel command line */
-	check_str("cmdline", cmdline_text("PARTUUID=abc", NULL, "subvol=@", "quiet"),
+	check_str("cmdline", cmdline_text("PARTUUID=abc", "subvol=@", "quiet"),
 		  "root=PARTUUID=abc rootflags=subvol=@ rootwait ro quiet");
-	check_str("cmdline plain", cmdline_text("PARTUUID=abc", NULL, NULL, NULL), "root=PARTUUID=abc rootwait ro");
-	check_str("cmdline luks", cmdline_text("/dev/mapper/luks-u-1", "u-1", "subvol=@", NULL),
-		  "rd.luks.uuid=u-1 root=/dev/mapper/luks-u-1 rootflags=subvol=@ rootwait ro");
-
-	/* LUKS containers by their device-mapper UUID */
-	check_str("luks2 dm uuid", luks_uuid_of_dm("CRYPT-LUKS2-7946c1de0d284951b5437ba98661c25c-cryptroot"),
-		  "7946c1de-0d28-4951-b543-7ba98661c25c");
-	check_str("luks1 dm uuid", luks_uuid_of_dm("CRYPT-LUKS1-7946C1DE0D284951B5437BA98661C25C-x\n"),
-		  "7946c1de-0d28-4951-b543-7ba98661c25c");
-	check_str("plain dm-crypt", luks_uuid_of_dm("CRYPT-PLAIN-cryptswap"), NULL);
-	check_str("lvm", luks_uuid_of_dm("LVM-abcdefabcdefabcdefabcdefabcdefab"), NULL);
-	check_str("short", luks_uuid_of_dm("CRYPT-LUKS2-7946c1de-x"), NULL);
-	check_str("mapper", luks_mapper("u-1"), "/dev/mapper/luks-u-1");
+	check_str("cmdline plain", cmdline_text("PARTUUID=abc", NULL, NULL), "root=PARTUUID=abc rootwait ro");
 
 	/* names */
 	CHECK(valid_hostname("cleanlinux") && valid_hostname("box-1.lan") && !valid_hostname("-x") &&
@@ -218,7 +295,7 @@ int main(void)
 	CHECK(pr.step == STEP_DISK && pr.percent == 1, "progress disk %d %d", pr.step, pr.percent);
 	progress_line(&pr, ":: Partitioning /dev/vdb");
 	progress_line(&pr, ":: Formatting");
-	CHECK(pr.step == STEP_FORMAT && pr.percent == 8, "progress format");
+	CHECK(pr.step == STEP_FORMAT && pr.percent == 7, "progress format");
 	progress_line(&pr, ":: Installing the packages");
 	CHECK(pr.step == STEP_PACKAGES && pr.percent == 12, "progress packages");
 	progress_line(&pr, "==> Packages (4): a b c d");
@@ -241,6 +318,20 @@ int main(void)
 	CHECK(pr.percent == 92, "progress never goes back");
 	progress_line(&pr, ":: Done: CleanLinux is installed on /dev/vdb");
 	CHECK(pr.step == STEP_DONE && pr.percent == 100, "progress done");
+	/* the copy of the live system: the share of the bytes */
+	struct progress pc = {0};
+	progress_line(&pc, ":: Mounting");
+	progress_line(&pc, "\033[1;36m::\033[0m Copying the system (2.4 GiB in 51234 files, nothing is built or downloaded)");
+	CHECK(pc.step == STEP_PACKAGES && pc.percent == 12 && !pc.copied && !pc.pkgs, "progress copy %d", pc.percent);
+	progress_line(&pc, "==> Copied 50% (1.2 GiB of 2.4 GiB)");
+	CHECK(pc.copied == 50 && pc.percent == 12 + 38 && !strcmp(pc.pkg, "1.2 GiB of 2.4 GiB"), "progress copied %d %s",
+	      pc.percent, pc.pkg);
+	progress_line(&pc, "==> Copied 100% (2.4 GiB of 2.4 GiB)");
+	CHECK(pc.copied == 100 && pc.percent == 88, "progress copied all %d", pc.percent);
+	progress_line(&pc, "==> Copied 300% (x)");
+	CHECK(pc.copied == 100 && pc.percent == 88, "progress copied: nonsense ignored");
+	progress_line(&pc, ":: Configuring the system");
+	CHECK(pc.step == STEP_CONFIG && pc.percent == 89, "progress after the copy");
 
 	/* UTF-8 and wrapping (columns = code points) */
 	const char *u = "aЖ€😀";
@@ -261,6 +352,8 @@ int main(void)
 	check_str("wrap table", text_wrap("Disk:     /dev/vdb  20 GiB\nUser:     anna", 40),
 		  "Disk:     /dev/vdb  20 GiB\nUser:     anna");
 	check_str("wrap at spaces", text_wrap("aaaa    bbbb cc", 8), "aaaa\nbbbb cc");
+
+	test_tree_copy();
 
 	printf("unit: %d checks, %d failed\n", checks, failed);
 	return failed != 0;

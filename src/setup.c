@@ -1,18 +1,19 @@
 /* SPDX-License-Identifier: MIT */
-/* cleanlinux-setup: the installer of CleanLinux with screens, for the live system of the ISO.
+/* cleanlinux-setup: the installer of CleanLinux with screens, for the live system.
  *
  *   cleanlinux-setup [--lang en|ru] [--ascii] [--dry-run]
  *   cleanlinux-setup --auto        what the live system starts at login: on its main console
  *                                  only, and not again once quit
  *
- * A few screens on the console (a Linux VT or a serial line; 80x24 is enough): the language, the
- * keyboard layout (loaded at once), the time zone, the disk, encryption, the computer's name, the
- * user and the passwords, the hardware profile, a summary. Esc goes back, Ctrl+C quits, nothing
- * changes before the last confirmation. Then cleanlinux-install does the work with these answers:
- * the passwords in files only root can read (a 0700 directory in /run, wiped afterwards), its
- * output in /tmp/cleanlinux-install.log, its progress on the screen. The console= and modeset
- * arguments of the running kernel go to the new system's command line (a serial console, or
- * nomodeset from the safe graphics entry of the ISO). */
+ * Eight steps on the console (a Linux VT or a serial line; 80x24 is enough), listed on the left
+ * of a large screen: the language, the keyboard layout (loaded at once), the time zone, the disk,
+ * the computer's name and the user, the system (a desktop such as labwc or the console only, the
+ * proprietary drivers, the hardware profile), a summary, the installation. Esc goes back, Ctrl+C
+ * quits, nothing changes before the last confirmation. Then cleanlinux-install copies the live
+ * system with these answers: the password in files only root can read (a 0700 directory in /run,
+ * wiped afterwards), its output in /tmp/cleanlinux-install.log, its progress on the screen. The
+ * console= and modeset arguments of the running kernel go to the new system's command line (a
+ * serial console, or nomodeset from the safe graphics entry). */
 #define _GNU_SOURCE
 #include "install.h"
 #include "setup_text.h"
@@ -39,9 +40,10 @@
 #define LOCK_FILE "/run/cleanlinux-setup.lock"
 #define EXIT_MARK "/run/cleanlinux-setup.exit"
 #define LIVE_DIR "/run/cleanlinux/live"
+#define LIVE_MEDIUM LIVE_DIR "/medium"
 #define ESP_MIB 512
 #define MIN_BYTES (((uint64_t)ESP_MIB << 20) + (3ULL << 30))
-#define STEPS 10
+#define STEPS 8
 
 enum { BACK = 0, NEXT = 1, QUIT = -2 };
 #define R_BACK (-1)
@@ -54,6 +56,8 @@ static bool dry_run, big_screen;
 static int step_no;
 /* where kbd's keymaps and fonts and tzdata's zone.tab are: / (CLEANLINUX_SETUP_DATA, for the tests) */
 static const char *data_root = "/";
+/* there when the firmware started the computer in UEFI mode (CLEANLINUX_SETUP_EFI, for the tests) */
+static const char *efi_dir = "/sys/firmware/efi";
 
 static char *tf(int id, ...)
 {
@@ -542,6 +546,50 @@ struct area {
 	int y, x, h, w;
 };
 
+#define SIDE 20 /* the width of the list of steps */
+
+static const int nav[STEPS] = {S_NAV_LANG, S_NAV_KEYMAP, S_NAV_TZ,	   S_NAV_DISK,
+			       S_NAV_USER, S_NAV_SYSTEM, S_NAV_SUMMARY, S_NAV_INSTALL};
+
+/* the steps on the left: done, the current one, to come */
+static void draw_steps(int y)
+{
+	for (int i = 0; i < STEPS && y + i * 2 < tui_rows - 2; i++) {
+		int row = y + i * 2, n = i + 1;
+		int attr = n < step_no ? A_STEP_DONE : n == step_no ? A_STEP_CUR : A_STEP;
+		if (n == step_no)
+			tui_fill(row, 1, SIDE - 2, attr, ' ');
+		uint32_t mark = n < step_no ? 0x221a : n == step_no ? 0x25b6 : 0;
+		if (mark)
+			tui_putc(row, 2, attr, mark);
+		else
+			tui_putc(row, 2, attr, '1' + (uint32_t)i);
+		tui_put(row, 4, attr, T(nav[i]), SIDE - 6);
+	}
+}
+
+/* where the panel goes: right of the steps on a large screen, else in the middle */
+static struct area panel_box(bool *side)
+{
+	*side = tui_cols >= 84 && tui_rows >= 18 && step_no > 0;
+	int left = *side ? SIDE : 0;
+	int w = tui_cols - left - 4 > 76 ? 76 : tui_cols - left - 4, h = tui_rows - 3 > 22 ? 22 : tui_rows - 3;
+	if (w < 20)
+		w = tui_cols - left > 20 ? 20 : tui_cols - left;
+	if (h < 5)
+		h = 5;
+	int y = 1 + (tui_rows - 2 - h - 1) / 2, x = left + (tui_cols - left - w - 2) / 2;
+	return (struct area){y < 1 ? 1 : y, x < 0 ? 0 : x, h, w};
+}
+
+/* the area inside the panel, as frame() returns it */
+static struct area inner(struct area p)
+{
+	return (struct area){p.y + 2, p.x + 3, p.h - 3, p.w - 6};
+}
+
+/* the screen around a panel: the bar at the top, the steps on the left (on a large screen), the
+ * panel with TITLE, the keys at the bottom; the area inside the panel */
 static struct area frame(const char *title, const char *hint)
 {
 	tui_clear();
@@ -549,21 +597,25 @@ static struct area frame(const char *title, const char *hint)
 	char *head = dry_run ? xasprintf(" %s (%s)", T(S_TITLE), T(S_DRY_TAG)) : xasprintf(" %s", T(S_TITLE));
 	tui_put(0, 0, A_TITLE, head, tui_cols);
 	free(head);
-	if (step_no > 0) {
+	if (step_no > 0 && step_no <= STEPS) {
 		char *s = tf(S_STEP, step_no, STEPS);
 		int n = (int)utf8_len(s);
 		if (n + 2 < tui_cols)
 			tui_put(0, tui_cols - n - 1, A_TITLE, s, n);
 		free(s);
 	}
-	int w = tui_cols - 2 > 78 ? 78 : tui_cols - 2, h = tui_rows - 3 > 24 ? 24 : tui_rows - 3;
-	int y = 1 + (tui_rows - 2 - h) / 2, x = (tui_cols - w) / 2;
-	tui_box(y, x, h, w, A_NORMAL);
+	bool side;
+	struct area p = panel_box(&side);
+	if (side)
+		draw_steps(2);
+	tui_panel(p.y, p.x, p.h, p.w);
 	char *t = xasprintf(" %s ", title);
-	tui_put(y, x + 2, A_BOLD, t, w - 4);
+	int tw = (int)utf8_len(t) > p.w - 4 ? p.w - 4 : (int)utf8_len(t);
+	tui_put(p.y, p.x + (p.w - tw) / 2, A_HEAD, t, tw);
 	free(t);
-	tui_put(tui_rows - 1, 1, A_DIM, hint, tui_cols - 2);
-	return (struct area){y + 2, x + 2, h - 3, w - 4};
+	tui_fill(tui_rows - 1, 0, tui_cols, A_HINT, ' ');
+	tui_put_marked(tui_rows - 1, 1, A_HINT, hint, tui_cols - 2);
+	return inner(p);
 }
 
 /* TEXT wrapped from row Y; the row after it */
@@ -585,6 +637,20 @@ static int draw_text(const struct area *a, int y, int attr, const char *text)
 	return y;
 }
 
+/* buttons centred on row Y: < Install >  < Back > */
+static void draw_buttons(const struct area *a, int y, const char *const *buttons, int nb, int sel)
+{
+	int total = 0;
+	for (int i = 0; i < nb; i++)
+		total += (int)utf8_len(buttons[i]) + 4 + (i ? 2 : 0);
+	int bx = a->x + (total < a->w ? (a->w - total) / 2 : 0);
+	for (int i = 0; i < nb; i++) {
+		char *b = xasprintf("< %s >", buttons[i]);
+		bx += tui_put(y, bx, i == sel ? A_SEL : A_BUTTON, b, a->x + a->w - bx) + 2;
+		free(b);
+	}
+}
+
 static bool want_quit(void);
 static bool asking_quit, installing;
 
@@ -593,15 +659,12 @@ static int dialog(const char *title, const char *text, const char *warn, const c
 {
 	for (;;) {
 		struct area a = frame(title, T(S_HINT_BUTTONS));
-		int y = draw_text(&a, a.y, A_NORMAL, text);
+		struct area t = a; /* the text above the buttons */
+		t.h = a.h - 2;
+		int y = draw_text(&t, a.y, A_NORMAL, text);
 		if (warn)
-			draw_text(&a, y + 1, A_WARN, warn);
-		int bx = a.x, by = a.y + a.h - 1;
-		for (int i = 0; i < nb; i++) {
-			char *b = xasprintf("[ %s ]", buttons[i]);
-			bx += tui_put(by, bx, i == sel ? A_SEL : A_BOLD, b, -1) + 2;
-			free(b);
-		}
+			draw_text(&t, y + 1, A_WARN, warn);
+		draw_buttons(&a, a.y + a.h - 1, buttons, nb, sel);
 		tui_flush();
 		switch (tui_key(-1)) {
 		case K_LEFT:
@@ -628,12 +691,9 @@ static int dialog(const char *title, const char *text, const char *warn, const c
 static bool want_quit(void)
 {
 	const char *b[] = {T(S_CONTINUE), T(S_QUIT)};
-	int saved = step_no;
-	step_no = 0;
 	asking_quit = true;
 	int r = dialog(T(S_QUIT_TITLE), T(S_QUIT_TEXT), NULL, b, 2, 0);
 	asking_quit = false;
-	step_no = saved;
 	return r == 1 || r == -2;
 }
 
@@ -945,35 +1005,100 @@ static int form_screen(const char *title, const char *text, struct field *f, int
 /* ---- the answers ---- */
 
 static struct {
-	int kmap, disk;
+	int kmap, disk, spin; /* spin: in spins[], -1: the console only */
 	char zone[96];
-	bool encrypt, root_own;
-	char luks[128], luks2[128], host[65], user[33], upw[128], upw2[128], rpw[128], rpw2[128];
-	const char *profile, *font;
-} st = {.kmap = 0, .disk = -1};
+	bool nonfree, keep_profile;
+	char host[65], user[33], upw[128], upw2[128];
+	const char *font;
+} st = {.kmap = 0, .disk = -1, .spin = -1, .nonfree = true};
 
 static void wipe_secrets(void)
 {
-	explicit_bzero(st.luks, sizeof(st.luks));
-	explicit_bzero(st.luks2, sizeof(st.luks2));
 	explicit_bzero(st.upw, sizeof(st.upw));
 	explicit_bzero(st.upw2, sizeof(st.upw2));
-	explicit_bzero(st.rpw, sizeof(st.rpw));
-	explicit_bzero(st.rpw2, sizeof(st.rpw2));
 }
 
-static const char *check_password(const char *a, const char *b, size_t min)
+static const char *check_password(const char *a, const char *b)
 {
 	if (!*a)
 		return T(S_ERR_EMPTY);
 	for (const char *p = a; *p; p++)
 		if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7e)
 			return T(S_ERR_ASCII);
-	if (strlen(a) < min)
-		return T(S_ERR_SHORT);
 	if (strcmp(a, b))
 		return T(S_ERR_MISMATCH);
 	return NULL;
+}
+
+/* ---- what the live medium carries: the spins (desktops) and the proprietary drivers ---- */
+
+struct spin {
+	char *name, *desc, *desc_ru;
+};
+static struct spin *spins;
+static int nspins;
+static strv nonfree_pkgs = STRV_INIT;
+/* the medium of the live system: LIVE_MEDIUM (CLEANLINUX_SETUP_MEDIUM, for the tests) */
+static const char *medium = LIVE_MEDIUM;
+
+static strv dir_names(const char *dir)
+{
+	strv v = STRV_INIT;
+	DIR *d = opendir(dir);
+	struct dirent *e;
+	while (d && (e = readdir(d)))
+		if (e->d_name[0] != '.' && valid_console_name(e->d_name)) {
+			char *p = xasprintf("%s/%s", dir, e->d_name);
+			if (is_dir(p))
+				strv_push(&v, e->d_name);
+			free(p);
+		}
+	if (d)
+		closedir(d);
+	if (v.n)
+		qsort(v.v, v.n, sizeof(char *), cmp_str);
+	return v;
+}
+
+static char *empty_null(char *s)
+{
+	if (s && !*s) {
+		free(s);
+		return NULL;
+	}
+	return s;
+}
+
+static void load_medium(void)
+{
+	const char *m = getenv("CLEANLINUX_SETUP_MEDIUM");
+	if (m && *m)
+		medium = m;
+	char *dir = xasprintf("%s/spins", medium);
+	strv names = dir_names(dir);
+	spins = xmalloc((names.n + 1) * sizeof(*spins));
+	for (size_t i = 0; i < names.n; i++) {
+		char *cp = xasprintf("%s/%s/var/lib/burn/spins/%s/spin.conf", dir, names.v[i], names.v[i]);
+		char *conf = read_file(cp, NULL);
+		spins[nspins++] = (struct spin){xstrdup(names.v[i]), empty_null(conf ? conf_get(conf, "SPIN_DESC") : NULL),
+						empty_null(conf ? conf_get(conf, "SPIN_DESC_RU") : NULL)};
+		free(conf);
+		free(cp);
+	}
+	strv_free(&names);
+	free(dir);
+	dir = xasprintf("%s/nonfree/var/lib/burn/installed", medium);
+	nonfree_pkgs = dir_names(dir);
+	free(dir);
+	/* the spin the live system was started with (its boot entry), else the first one */
+	st.spin = nspins ? 0 : -1;
+	char *c = read_line("/proc/cmdline");
+	for (char *save = NULL, *w = c ? strtok_r(c, " ", &save) : NULL; w; w = strtok_r(NULL, " ", &save))
+		if (str_prefix(w, "cleanlinux.live.spin="))
+			for (int i = 0; i < nspins; i++)
+				if (!strcmp(spins[i].name, w + 21))
+					st.spin = i;
+	free(c);
 }
 
 /* ---- the screens: NEXT, BACK or QUIT; DIR is where the last one went (skipped screens follow) ---- */
@@ -982,7 +1107,8 @@ static int scr_lang(int dir)
 {
 	(void)dir;
 	struct item it[2] = {{"English", NULL, NULL, false}, {"Русский", NULL, NULL, false}};
-	int r = list_screen(T(S_LANG_TITLE), "Choose the language. · Выберите язык.", NULL, it, 2, lang, false);
+	const char *warn = dry_run ? T(S_DRY_RUN) : !is_dir(efi_dir) ? T(S_NO_UEFI) : NULL;
+	int r = list_screen(T(S_LANG_TITLE), "Choose the language. · Выберите язык.", warn, it, 2, lang, false);
 	if (r < 0)
 		return r == R_QUIT ? QUIT : BACK;
 	lang = r;
@@ -995,15 +1121,6 @@ static int scr_lang(int dir)
 	if (lang == 1 && st.kmap == 0)
 		st.kmap = 1;
 	return NEXT;
-}
-
-static int scr_welcome(int dir)
-{
-	(void)dir;
-	const char *b[] = {T(S_CONTINUE), T(S_BACK)};
-	const char *warn = dry_run ? T(S_DRY_RUN) : !is_dir("/sys/firmware/efi") ? T(S_NO_UEFI) : NULL;
-	int r = dialog(T(S_WELCOME_TITLE), T(S_WELCOME_TEXT), warn, b, 2, 0);
-	return r == 0 ? NEXT : r == -2 ? QUIT : BACK;
 }
 
 static bool kmap_available(size_t i)
@@ -1195,32 +1312,6 @@ static int scr_disk(int dir)
 	}
 }
 
-static const char *check_luks(struct field *f, int *focus)
-{
-	const char *e = check_password(f[0].buf, f[1].buf, 8);
-	*focus = e && e != T(S_ERR_MISMATCH) ? 0 : 1;
-	return e;
-}
-
-static int scr_encrypt(int dir)
-{
-	(void)dir;
-	struct item it[2] = {{(char *)T(S_ENC_NO), NULL, NULL, false}, {(char *)T(S_ENC_YES), "LUKS2", NULL, false}};
-	for (;;) {
-		int r = list_screen(T(S_ENC_TITLE), T(S_ENC_TEXT), NULL, it, 2, st.encrypt, false);
-		if (r < 0)
-			return r == R_QUIT ? QUIT : BACK;
-		st.encrypt = r == 1;
-		if (!st.encrypt)
-			return NEXT;
-		struct field f[2] = {{T(S_PASSPHRASE), st.luks, sizeof(st.luks), 0, true},
-				     {T(S_REPEAT), st.luks2, sizeof(st.luks2), 0, true}};
-		int fr = form_screen(T(S_PASS_TITLE), T(S_PASS_TEXT), f, 2, check_luks);
-		if (fr != BACK)
-			return fr;
-	}
-}
-
 static bool user_taken(const char *name)
 {
 	char *pw = read_file("/etc/passwd", NULL);
@@ -1245,7 +1336,7 @@ static const char *check_user(struct field *f, int *focus)
 		*focus = 1;
 		return T(S_ERR_TAKEN);
 	}
-	const char *e = check_password(f[2].buf, f[3].buf, 1);
+	const char *e = check_password(f[2].buf, f[3].buf);
 	*focus = e && e != T(S_ERR_MISMATCH) ? 2 : 3;
 	return e;
 }
@@ -1262,50 +1353,132 @@ static int scr_user(int dir)
 	return form_screen(T(S_USER_TITLE), T(S_USER_TEXT), f, 4, check_user);
 }
 
-static const char *check_root(struct field *f, int *focus)
-{
-	const char *e = check_password(f[0].buf, f[1].buf, 1);
-	*focus = e && e != T(S_ERR_MISMATCH) ? 0 : 1;
-	return e;
-}
+/* a row of the System screen: a choice among VALUES, changed with the arrows, each with a note */
+struct choice {
+	int label, n, sel;
+	char **values, **notes;
+};
 
-static int scr_root(int dir)
+static int options_screen(const char *title, const char *text, struct choice *o, int n)
 {
-	(void)dir;
+	int focus = 0;
 	for (;;) {
-		char *same = tf(S_ROOT_SAME, st.user);
-		struct item it[2] = {{same, NULL, NULL, false}, {(char *)T(S_ROOT_OWN), NULL, NULL, false}};
-		int r = list_screen(T(S_ROOT_TITLE), T(S_ROOT_TEXT), NULL, it, 2, st.root_own, false);
-		free(same);
-		if (r < 0)
-			return r == R_QUIT ? QUIT : BACK;
-		st.root_own = r == 1;
-		if (!st.root_own)
-			return NEXT;
-		struct field f[2] = {{T(S_PASSWORD), st.rpw, sizeof(st.rpw), 0, true},
-				     {T(S_REPEAT), st.rpw2, sizeof(st.rpw2), 0, true}};
-		int fr = form_screen(T(S_ROOT_PW_TITLE), T(S_ROOT_PW_TEXT), f, 2, check_root);
-		if (fr != BACK)
-			return fr;
+		struct area a = frame(title, T(S_HINT_OPTIONS));
+		int y = a.y;
+		if (text)
+			y = draw_text(&a, y, A_NORMAL, text) + 1;
+		int lw = 0, vw = 0;
+		for (int i = 0; i < n; i++) {
+			int l = (int)utf8_len(T(o[i].label));
+			lw = l > lw ? l : lw;
+			for (int v = 0; v < o[i].n; v++) {
+				int w = (int)utf8_len(o[i].values[v]);
+				vw = w > vw ? w : vw;
+			}
+		}
+		lw += 3;
+		vw += 4;
+		if (lw + vw > a.w)
+			vw = a.w - lw;
+		for (int i = 0; i < n; i++) {
+			int row = y + i * 2, attr = i == focus ? A_FOCUS : A_FIELD;
+			if (i == focus)
+				tui_putc(row, a.x - 2, A_BOLD, 0x25b6);
+			tui_put(row, a.x, i == focus ? A_BOLD : A_NORMAL, T(o[i].label), lw - 1);
+			tui_fill(row, a.x + lw, vw, attr, ' ');
+			if (o[i].n > 1) {
+				tui_putc(row, a.x + lw, attr, 0x25c4);
+				tui_putc(row, a.x + lw + vw - 1, attr, 0x25ba);
+			}
+			tui_put(row, a.x + lw + 2, attr, o[i].values[o[i].sel], vw - 4);
+		}
+		const char *note = o[focus].notes[o[focus].sel];
+		if (note && *note)
+			draw_text(&a, y + n * 2, A_DIM, note);
+		tui_flush();
+		struct choice *c = &o[focus];
+		switch (tui_key(-1)) {
+		case K_UP:
+		case K_BTAB: focus = (focus + n - 1) % n; break;
+		case K_DOWN:
+		case K_TAB: focus = (focus + 1) % n; break;
+		case K_LEFT: c->sel = (c->sel + c->n - 1) % c->n; break;
+		case K_RIGHT:
+		case ' ': c->sel = (c->sel + 1) % c->n; break;
+		case K_ENTER: return NEXT;
+		case K_ESC: return BACK;
+		case K_CTRL_C:
+			if (want_quit())
+				return QUIT;
+			break;
+		case K_EOF: return QUIT;
+		default: break;
+		}
 	}
 }
 
-static int scr_profile(int dir)
+static const char *spin_desc(const struct spin *s)
 {
-	if (!prof_dev)
-		return dir;
-	char *a = tf(S_PROFILE_DEVICE, prof_dev), *b = tf(S_PROFILE_KEEP, prof_cur);
-	struct item it[2] = {{a, NULL, NULL, false}, {b, NULL, NULL, false}};
-	char *text = tf(S_PROFILE_TEXT, prof_model ? prof_model : prof_dev);
-	int sel = st.profile || dir == NEXT ? 0 : 1;
-	int r = list_screen(T(S_PROFILE_TITLE), text, NULL, it, 2, sel, false);
-	free(a);
-	free(b);
-	free(text);
-	if (r < 0)
-		return r == R_QUIT ? QUIT : BACK;
-	st.profile = r == 0 ? prof_dev : NULL;
-	return NEXT;
+	return lang && s->desc_ru ? s->desc_ru : s->desc;
+}
+
+static int scr_system(int dir)
+{
+	(void)dir;
+	struct choice o[3];
+	int n = 0;
+	/* the desktop: the spins of the medium, or none */
+	char **dv = xmalloc(((size_t)nspins + 1) * sizeof(char *)), **dn = xmalloc(((size_t)nspins + 1) * sizeof(char *));
+	for (int i = 0; i < nspins; i++) {
+		dv[i] = xstrdup(spins[i].name);
+		dn[i] = xstrdup(spin_desc(&spins[i]) ? spin_desc(&spins[i]) : "");
+	}
+	dv[nspins] = xstrdup(T(S_SYS_CONSOLE));
+	dn[nspins] = xstrdup(T(S_SYS_CONSOLE_NOTE));
+	o[n++] = (struct choice){S_SYS_DESKTOP, nspins + 1, st.spin < 0 ? nspins : st.spin, dv, dn};
+	/* the proprietary drivers */
+	sbuf b = SBUF_INIT;
+	sb_add(&b, "");
+	for (size_t i = 0; i < nonfree_pkgs.n; i++)
+		sb_printf(&b, "%s%s", i ? ", " : " (", nonfree_pkgs.v[i]);
+	if (nonfree_pkgs.n)
+		sb_add(&b, ")");
+	char *list = sb_take(&b);
+	char **nv = xmalloc(2 * sizeof(char *)), **nn = xmalloc(2 * sizeof(char *));
+	nv[0] = xstrdup(T(S_ON));
+	nv[1] = xstrdup(T(S_OFF));
+	nn[0] = tf(S_SYS_NONFREE_ON, list);
+	nn[1] = xstrdup(T(S_SYS_NONFREE_OFF));
+	free(list);
+	o[n++] = (struct choice){S_SYS_NONFREE, 2, st.nonfree ? 0 : 1, nv, nn};
+	/* the hardware profile: of this device, or as the image is */
+	if (prof_dev) {
+		char **pv = xmalloc(2 * sizeof(char *)), **pn = xmalloc(2 * sizeof(char *));
+		pv[0] = tf(S_PROFILE_DEVICE, prof_dev);
+		pv[1] = tf(S_PROFILE_KEEP, prof_cur);
+		pn[0] = tf(S_PROFILE_NOTE, prof_model ? prof_model : prof_dev);
+		pn[1] = xstrdup(T(S_PROFILE_NOTE_KEEP));
+		o[n++] = (struct choice){S_SYS_PROFILE, 2, st.keep_profile ? 1 : 0, pv, pn};
+	}
+	int r = options_screen(T(S_SYS_TITLE), T(S_SYS_TEXT), o, n);
+	st.spin = o[0].sel == nspins ? -1 : o[0].sel;
+	st.nonfree = o[1].sel == 0;
+	if (prof_dev)
+		st.keep_profile = o[2].sel == 1;
+	for (int i = 0; i < n; i++) {
+		for (int v = 0; v < o[i].n; v++) {
+			free(o[i].values[v]);
+			free(o[i].notes[v]);
+		}
+		free(o[i].values);
+		free(o[i].notes);
+	}
+	return r;
+}
+
+static const char *chosen_profile(void)
+{
+	return prof_dev && !st.keep_profile ? prof_dev : NULL;
 }
 
 static int scr_summary(int dir)
@@ -1319,13 +1492,13 @@ static int scr_summary(int dir)
 		char *value;
 	} rows[] = {
 		{S_SUM_DISK, *d->model ? xasprintf("%s  %s  %s", d->dev, d->model, d->size) : xasprintf("%s  %s", d->dev, d->size)},
-		{S_SUM_ENC, xstrdup(T(st.encrypt ? S_YES : S_NO))},
 		{S_SUM_KEYMAP, xasprintf("%s (%s)", lang ? k->ru : k->en, k->map)},
 		{S_SUM_TZ, xstrdup(*st.zone ? st.zone : "UTC")},
 		{S_SUM_HOST, xstrdup(st.host)},
 		{S_SUM_USER, xstrdup(st.user)},
-		{S_SUM_ROOT, xstrdup(T(st.root_own ? S_ROOT_OWN_SHORT : S_ROOT_SAME_SHORT))},
-		{S_SUM_PROFILE, xstrdup(st.profile ? st.profile : prof_cur ? prof_cur : "-")},
+		{S_SUM_DESKTOP, xstrdup(st.spin >= 0 ? spins[st.spin].name : T(S_SYS_CONSOLE))},
+		{S_SUM_NONFREE, xstrdup(T(st.nonfree ? S_ON : S_OFF))},
+		{S_SUM_PROFILE, xstrdup(chosen_profile() ? chosen_profile() : prof_cur ? prof_cur : "-")},
 	};
 	int lw = 0;
 	for (size_t i = 0; i < ARRAY_LEN(rows); i++)
@@ -1333,10 +1506,14 @@ static int scr_summary(int dir)
 			lw = (int)utf8_len(T(rows[i].label));
 	for (size_t i = 0; i < ARRAY_LEN(rows); i++) {
 		int pad = lw - (int)utf8_len(T(rows[i].label));
-		sb_printf(&b, "%s:%*s %s\n", T(rows[i].label), pad, "", rows[i].value);
+		sb_printf(&b, "%s:%*s  %s\n", T(rows[i].label), pad, "", rows[i].value);
 		free(rows[i].value);
 	}
-	char *text = sb_take(&b), *warn = tf(S_SUM_WARN, d->dev);
+	char *text = sb_take(&b), *erase = tf(S_SUM_WARN, d->dev);
+	if (*text && text[strlen(text) - 1] == '\n')
+		text[strlen(text) - 1] = '\0';
+	char *warn = !dry_run && !is_dir(efi_dir) ? xasprintf("%s %s", erase, T(S_NO_UEFI)) : xstrdup(erase);
+	free(erase);
 	char *q = tf(S_CONFIRM_TEXT, d->dev, *d->model ? d->model : d->size);
 	const char *btn[] = {T(S_INSTALL), T(S_BACK)}, *yn[] = {T(S_BACK), T(S_ERASE)};
 	int result;
@@ -1347,10 +1524,7 @@ static int scr_summary(int dir)
 			break;
 		}
 		/* the last question; Back (the default) returns to the summary */
-		int saved = step_no;
-		step_no = 0;
 		int c = dialog(T(S_CONFIRM_TITLE), q, NULL, yn, 2, 0);
-		step_no = saved;
 		if (c == 1 || c == -2) {
 			result = c == 1 ? NEXT : QUIT;
 			break;
@@ -1442,10 +1616,10 @@ static void tail_free(struct tail *t)
 }
 
 static const int step_names[] = {
-	[STEP_NONE] = S_ST_DISK,     [STEP_DISK] = S_ST_DISK,	     [STEP_PARTITION] = S_ST_PARTITION,
-	[STEP_ENCRYPT] = S_ST_ENCRYPT, [STEP_FORMAT] = S_ST_FORMAT,  [STEP_MOUNT] = S_ST_MOUNT,
-	[STEP_PACKAGES] = S_ST_PACKAGES, [STEP_CONFIG] = S_ST_CONFIG, [STEP_USERS] = S_ST_USERS,
-	[STEP_BOOT] = S_ST_BOOT,     [STEP_UNMOUNT] = S_ST_UNMOUNT, [STEP_DONE] = S_ST_DONE,
+	[STEP_NONE] = S_ST_DISK,	 [STEP_DISK] = S_ST_DISK,     [STEP_PARTITION] = S_ST_PARTITION,
+	[STEP_FORMAT] = S_ST_FORMAT,	 [STEP_MOUNT] = S_ST_MOUNT,   [STEP_PACKAGES] = S_ST_COPY,
+	[STEP_CONFIG] = S_ST_CONFIG,	 [STEP_USERS] = S_ST_USERS,   [STEP_BOOT] = S_ST_BOOT,
+	[STEP_UNMOUNT] = S_ST_UNMOUNT, [STEP_DONE] = S_ST_DONE,
 };
 
 static void draw_progress(const struct dinfo *d, const struct progress *p, const struct tail *t)
@@ -1467,6 +1641,9 @@ static void draw_progress(const struct dinfo *d, const struct progress *p, const
 		char *count = tf(S_PROG_PKGS, p->pkgs_done < p->pkgs ? p->pkgs_done : p->pkgs, p->pkgs);
 		what = xasprintf("%s: %s%s%s", T(S_ST_PACKAGES), count, *p->pkg ? " · " : "", p->pkg);
 		free(count);
+	} else if (p->step == STEP_PACKAGES && (p->copied > 0 || *p->pkg)) {
+		/* the copy of the live system: "Copying the system: 45% · 1.1 GiB of 2.4 GiB" */
+		what = xasprintf("%s: %d%%%s%s", T(S_ST_COPY), p->copied, *p->pkg ? " · " : "", p->pkg);
 	} else {
 		what = xstrdup(T(step_names[p->step]));
 	}
@@ -1491,12 +1668,11 @@ static int run_installer(struct tail *t)
 		dir = mkdtemp(tmpl2);
 	if (!dir)
 		return -1;
-	char *rf = NULL, *uf = NULL, *lf = NULL;
-	if (write_secret(dir, "root", st.root_own ? st.rpw : st.upw, &rf) < 0 || write_secret(dir, "user", st.upw, &uf) < 0 ||
-	    (st.encrypt && write_secret(dir, "luks", st.luks, &lf) < 0)) {
+	/* root gets the user's password */
+	char *rf = NULL, *uf = NULL;
+	if (write_secret(dir, "root", st.upw, &rf) < 0 || write_secret(dir, "user", st.upw, &uf) < 0) {
 		remove_secret(rf);
 		remove_secret(uf);
-		remove_secret(lf);
 		rmdir(dir);
 		return -1;
 	}
@@ -1514,11 +1690,12 @@ static int run_installer(struct tail *t)
 	strv_push(&a, rf);
 	strv_push(&a, "--user-password-file");
 	strv_push(&a, uf);
-	if (st.encrypt) {
-		strv_push(&a, "--encrypt");
-		strv_push(&a, "--encrypt-password-file");
-		strv_push(&a, lf);
+	if (st.spin >= 0) {
+		strv_push(&a, "--spin");
+		strv_push(&a, spins[st.spin].name);
 	}
+	if (!st.nonfree)
+		strv_push(&a, "--no-nonfree");
 	if (*st.zone) {
 		strv_push(&a, "--timezone");
 		strv_push(&a, st.zone);
@@ -1529,9 +1706,9 @@ static int run_installer(struct tail *t)
 		strv_push(&a, "--font");
 		strv_push(&a, st.font);
 	}
-	if (st.profile) {
+	if (chosen_profile()) {
 		strv_push(&a, "--profile");
-		strv_push(&a, st.profile);
+		strv_push(&a, chosen_profile());
 	}
 	char *extra = carried_cmdline();
 	if (*extra) {
@@ -1633,7 +1810,6 @@ static int run_installer(struct tail *t)
 		close(rd);
 	remove_secret(rf);
 	remove_secret(uf);
-	remove_secret(lf);
 	rmdir(dir);
 	return status;
 }
@@ -1642,14 +1818,18 @@ static int scr_install(int dir)
 {
 	(void)dir;
 	struct tail t = {{0}, 0};
-	step_no = 0;
 	installing = true;
 	int status = run_installer(&t);
 	const struct dinfo *d = &disks[st.disk];
 	int result;
 	if (status == 0) {
 		wipe_secrets();
-		char *text = tf(S_DONE_TEXT, d->dev, st.user);
+		step_no = STEPS + 1; /* every step done */
+		char *done = tf(S_DONE_TEXT, d->dev, st.user);
+		char *desk = st.spin >= 0 ? tf(S_DONE_DESKTOP, spins[st.spin].name) : xstrdup("");
+		char *text = xasprintf("%s%s", done, desk);
+		free(done);
+		free(desk);
 		const char *b[] = {T(S_REBOOT), T(S_POWEROFF), T(S_SHELL)};
 		for (;;) {
 			int r = dialog(T(S_DONE_TITLE), text, dry_run ? T(S_DRY_RUN) : NULL, b, 3, 0);
@@ -1671,10 +1851,20 @@ static int scr_install(int dir)
 		sbuf b = SBUF_INIT;
 		char *head = status < 0 ? tf(S_ERR_RUN, "cleanlinux-install") : tf(S_FAIL_TEXT, status, LOG_FILE);
 		sb_printf(&b, "%s\n\n", head);
+		/* the last lines of its output that fit above the buttons, one row each */
+		bool side;
+		struct area a = inner(panel_box(&side));
+		char *hw = text_wrap(head, a.w);
+		int hl = 1;
+		for (const char *c = hw; *c; c++)
+			hl += *c == '\n';
+		free(hw);
 		free(head);
-		int from = t.n > 10 ? t.n - 10 : 0;
-		for (int i = from; i < t.n; i++)
-			sb_printf(&b, "%s\n", t.line[i]);
+		int k = a.h - 2 - hl - 1;
+		if (k < 1)
+			k = 1;
+		for (int i = t.n > k ? t.n - k : 0; i < t.n; i++)
+			sb_printf(&b, "%.*s\n", (int)utf8_prefix(t.line[i], (size_t)a.w), t.line[i]);
 		char *text = sb_take(&b);
 		const char *btn[] = {T(S_RETRY), T(S_SHELL)};
 		int r = dialog(T(S_FAIL_TITLE), text, NULL, btn, 2, 0);
@@ -1718,8 +1908,9 @@ static _Noreturn void usage(int code)
 		   "       cleanlinux-setup --auto\n"
 		   "\n"
 		   "Install CleanLinux on a disk of this computer, screen by screen: the language, the\n"
-		   "keyboard layout, the time zone, the disk, encryption, the user and the passwords. The\n"
-		   "work is done by cleanlinux-install; its log: " LOG_FILE ".\n"
+		   "keyboard layout, the time zone, the disk, the user and the password, the system (a\n"
+		   "desktop, the proprietary drivers). cleanlinux-install copies the live system; its\n"
+		   "log: " LOG_FILE ".\n"
 		   "\n"
 		   "      --lang en|ru  the language of the screens (the first one asks)\n"
 		   "      --ascii       ASCII lines instead of box drawing\n"
@@ -1764,6 +1955,9 @@ int main(int argc, char **argv)
 	const char *dr = getenv("CLEANLINUX_SETUP_DATA");
 	if (dr && *dr)
 		data_root = dr;
+	const char *ed = getenv("CLEANLINUX_SETUP_EFI");
+	if (ed && *ed)
+		efi_dir = ed;
 	if (autostart) {
 		if (exists(EXIT_MARK) || !isatty(0))
 			return 0;
@@ -1785,6 +1979,7 @@ int main(int argc, char **argv)
 	}
 	load_zones();
 	load_profiles();
+	load_medium();
 	char *lt = realpath("/etc/localtime", NULL);
 	const char *z = lt ? strstr(lt, "zoneinfo/") : NULL;
 	if (z && valid_zone(z + 9))
@@ -1798,12 +1993,12 @@ int main(int argc, char **argv)
 		 * shows both */
 		set_font(font_for("cyr"));
 	}
-	static int (*const screens[])(int) = {scr_lang, scr_welcome, scr_keymap, scr_timezone, scr_disk, scr_encrypt,
-					      scr_user, scr_root, scr_profile, scr_summary, scr_install};
+	static int (*const screens[STEPS])(int) = {scr_lang,  scr_keymap, scr_timezone, scr_disk,
+						   scr_user,  scr_system, scr_summary,  scr_install};
 	int sc = 0, dir = NEXT;
-	while (sc < (int)ARRAY_LEN(screens)) {
-		step_no = sc < STEPS ? sc + 1 : 0;
-		if (sc == 3 && !*st.zone)
+	while (sc < STEPS) {
+		step_no = sc + 1;
+		if (sc == 2 && !*st.zone)
 			snprintf(st.zone, sizeof(st.zone), "%s", lang ? "Europe/Moscow" : "UTC");
 		int r = screens[sc](dir);
 		if (r == QUIT)

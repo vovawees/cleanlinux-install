@@ -5,7 +5,7 @@
 #   make install         DESTDIR=... PREFIX=/usr
 #   make dist            cleanlinux-install-VERSION.tar.gz from git HEAD
 
-VERSION := 0.6.3
+VERSION := 0.7.0
 PREFIX ?= /usr
 BINDIR ?= $(PREFIX)/bin
 
@@ -22,7 +22,7 @@ CRYPT_LIBS := $(or $(shell $(PKG_CONFIG) --libs libxcrypt 2>/dev/null),-lcrypt)
 
 ALL_CFLAGS = $(WARN) $(DEFS) $(BLKID_CFLAGS) $(CRYPT_CFLAGS) $(CPPFLAGS) $(CFLAGS)
 
-COMMON = src/plan.o src/system.o src/util.o
+COMMON = src/plan.o src/system.o src/util.o src/copy.o
 OBJ = src/main.o $(COMMON)
 SETUP_OBJ = src/setup.o src/tui.o $(COMMON)
 
@@ -40,8 +40,8 @@ cleanlinux-install: $(OBJ)
 cleanlinux-setup: $(SETUP_OBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SETUP_OBJ) $(BLKID_LIBS) $(CRYPT_LIBS)
 
-tests/unit: tests/unit.c src/plan.o src/util.o src/tui.o src/install.h src/util.h src/tui.h
-	$(CC) $(ALL_CFLAGS) -Isrc -o $@ tests/unit.c src/plan.o src/util.o src/tui.o
+tests/unit: tests/unit.c src/plan.o src/util.o src/tui.o src/copy.o src/install.h src/util.h src/tui.h
+	$(CC) $(ALL_CFLAGS) -Isrc -o $@ tests/unit.c src/plan.o src/util.o src/tui.o src/copy.o
 
 check: all tests/unit
 	./tests/unit

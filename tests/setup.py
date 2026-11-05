@@ -199,6 +199,17 @@ def make_data(root):
             f.write("%s\t%s\t%s\n" % (cc, coord, zone))
 
 
+def make_medium(root):
+    """the live medium as cleanlinux-boot mounts it: a spin (labwc) and the proprietary drivers"""
+    spin = os.path.join(root, "spins/labwc/var/lib/burn/spins/labwc")
+    os.makedirs(spin)
+    with open(os.path.join(spin, "spin.conf"), "w") as f:
+        f.write('SPIN_NAME=labwc\nSPIN_DESC="labwc: a light Wayland desktop with a panel"\n'
+                'SPIN_DESC_RU="labwc: лёгкий рабочий стол Wayland с панелью"\n')
+    os.makedirs(os.path.join(root, "nonfree/var/lib/burn/installed/steamdeck-dsp"))
+    os.makedirs(os.path.join(root, "@/usr"))
+
+
 INSTALLER = r"""#!/bin/sh
 # a stand-in for cleanlinux-install: the arguments, the passwords, the progress of a real one
 out=%(out)s
@@ -206,7 +217,7 @@ printf '%%s\n' "$@" >"$out/args"
 prev=
 for a; do
 	case $prev in
-	--root-password-file | --user-password-file | --encrypt-password-file)
+	--root-password-file | --user-password-file)
 		printf '%%s %%s %%s\n' "$prev" "$(stat -c %%a "$a")" "$(cat "$a")" >>"$out/secrets"
 		dirname "$a" >"$out/secretdir"
 		;;
@@ -218,9 +229,8 @@ step "Disk /dev/vdb"
 step "Partitioning /dev/vdb"
 step "Formatting"
 step "Mounting"
-step "Installing the packages"
-echo "==> Packages (3): glibc linux burn"
-for p in glibc linux burn; do echo "==> Installing $p 1.0-1"; sleep 0.2; done
+step "Copying the system (2.4 GiB in 51234 files, nothing is built or downloaded)"
+for p in 10 50 100; do echo "==> Copied $p%% ($p MiB of 2.4 GiB)"; sleep 0.3; done
 if [ -n "${FAKE_FAIL:-}" ]; then
 	echo "error: something broke"
 	exit "$FAKE_FAIL"
@@ -237,6 +247,7 @@ def base_env(tmp, data, extra=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith("CLEANLINUX_")}
     env.update({"TERM": "xterm-256color", "LANG": "C.UTF-8", "CLEANLINUX_SETUP_DATA": data,
                 "CLEANLINUX_SETUP_INSTALLER": os.path.join(tmp, "installer"),
+                "CLEANLINUX_SETUP_MEDIUM": os.path.join(tmp, "medium"),
                 "CLEANLINUX_SETUP_DISKS": "vdb=20480=QEMU HARDDISK=ext4, vfat;sdz=2048=Tiny stick;"
                                           "sdy=8192=Busy disk==busy;sdx=16384=Live stick==medium",
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
@@ -245,18 +256,19 @@ def base_env(tmp, data, extra=None):
 
 
 def test_english(binary, tmp, data):
-    """the whole way in English: no encryption, root with the user's password, a dry run"""
+    """the whole way in English: the labwc desktop, no proprietary drivers, a dry run"""
     out = os.path.join(tmp, "en")
     os.makedirs(out)
     with open(os.path.join(tmp, "installer"), "w") as f:
         f.write(INSTALLER % {"out": out})
     os.chmod(os.path.join(tmp, "installer"), 0o755)
     t = Tui([binary, "--dry-run"], base_env(tmp, data))
-    t.wait_for("Language · Язык", "English", "Русский", "CleanLinux installation (dry run)")
+    t.wait_for("Language · Язык", "English", "Русский", "CleanLinux installation (dry run)", "step 1 of 8",
+               "Dry run: cleanlinux-install only shows")
+    # the steps on the left of a large screen
+    scr = t.wait_for("▶ Language", "2 Keyboard", "6 System", "8 Installation", "Enter")
     t.send(ENTER)
-    scr = t.wait_for("Welcome", "Dry run: cleanlinux-install only shows", "Continue", "step 2 of 10")
-    t.send(ENTER)
-    t.wait_for("Keyboard layout", "English (US)", "German", "Russian")
+    t.wait_for("Keyboard layout", "English (US)", "German", "Russian", "step 2 of 8", "√ Language", "▶ Keyboard")
     check("Ukrainian" not in t.screen.text(), "a keymap kbd does not have is not offered", t.screen.text())
     # searching: by the name and by the keymap
     t.type("germ")
@@ -265,8 +277,8 @@ def test_english(binary, tmp, data):
     t.send(CTRL_U)
     t.type("dvo")
     t.wait_for("English (Dvorak)")
-    t.send(CTRL_U, ESC)  # Esc with an empty search: back to the welcome screen
-    t.wait_for("Welcome")
+    t.send(CTRL_U, ESC)  # Esc with an empty search: back to the language
+    t.wait_for("Language · Язык", "step 1 of 8")
     t.send(ENTER)
     t.wait_for("Keyboard layout")
     t.type("de-lat")
@@ -304,10 +316,8 @@ def test_english(binary, tmp, data):
     t.wait_for("/dev/vdb  QEMU HARDDISK")
     t.send("\x1b[H")  # Home
     t.send(ENTER)
-    t.wait_for("Encryption", "No encryption", "Encrypt the disk")
-    t.send(ENTER)
     # the user: wrong answers first
-    t.wait_for("Computer and user", "Computer name", "cleanlinux")
+    t.wait_for("Computer and user", "Computer name", "cleanlinux", "root, gets the same password", "step 5 of 8")
     t.send(CTRL_U)
     t.type("testbox")
     t.send(TAB)
@@ -331,31 +341,46 @@ def test_english(binary, tmp, data):
     scr = t.wait_for("Computer and user")
     check("pw1" not in scr and "pw2" not in scr, "passwords are not shown", scr)
     t.send(ENTER)
-    t.wait_for("Administrator (root)", "The same password as anna")
+    # the system: the desktop of the medium, the proprietary drivers
+    scr = t.wait_for("System", "Desktop", "◄ labwc", "Proprietary drivers", "◄ on", "step 6 of 8",
+                     "labwc: a light Wayland desktop with a panel")
+    t.send(RIGHT)
+    t.wait_for("none (console)", "Only the text console.")
+    t.send(LEFT)
+    t.wait_for("◄ labwc", "labwc: a light Wayland desktop")
+    t.send(DOWN)
+    t.wait_for("not free software (steamdeck-dsp)", "ALLOW_NONFREE=1")
+    t.send(" ")
+    t.wait_for("◄ off", "Only free software", "ALLOW_NONFREE=0")
     t.send(ENTER)
     scr = t.wait_for("Ready to install", "/dev/vdb  QEMU HARDDISK  20.0 GiB", "German (de-latin1)", "Europe/Moscow",
-                     "testbox", "anna", "the user's password", "ALL DATA ON /dev/vdb WILL BE ERASED.", "Install")
+                     "testbox", "anna", "labwc", "off", "ALL DATA ON /dev/vdb WILL BE ERASED.", "< Install >",
+                     "step 7 of 8")
     t.send(ENTER)
     t.wait_for("Erase the disk?", "Everything on /dev/vdb (QEMU HARDDISK)", "Erase and install")
     t.send(ENTER)  # Back is the default
     t.wait_for("Ready to install")
     t.send(ENTER, RIGHT, ENTER)
-    scr = t.wait_for("Installing", "Copying the packages: ", ":: Mounting", timeout=15)
+    scr = t.wait_for("Installing", "Copying the system: ", ":: Mounting", "step 8 of 8", timeout=15)
     check("[1;36m" not in scr, "the log tail without colors", scr)
-    scr = t.wait_for("CleanLinux is installed", "Remove the USB stick", "Exit to the console", timeout=20)
+    t.wait_for("Copying the system: 50% · 50 MiB of 2.4 GiB", timeout=15)
+    scr = t.wait_for("CleanLinux is installed", "Remove the USB stick", "The desktop (labwc) starts",
+                     "Exit to the console", "√ Installation", timeout=20)
     args = open(os.path.join(out, "args")).read().split("\n")
     want = ["-y", "-n", "--hostname", "testbox", "--user", "anna", "--root-password-file"]
     check(args[:len(want)] == want, "installer arguments: %r" % args)
-    for a, b in (("--timezone", "Europe/Moscow"), ("--keymap", "de-latin1"), ("--font", "lat9w-16")):
+    for a, b in (("--timezone", "Europe/Moscow"), ("--keymap", "de-latin1"), ("--font", "lat9w-16"),
+                 ("--spin", "labwc")):
         check(a in args and args[args.index(a) + 1] == b, "%s %s in %r" % (a, b, args))
-    check("--encrypt" not in args and args[-2] == "/dev/vdb", "no encryption, the disk last: %r" % args)
+    check("--no-nonfree" in args and "--encrypt" not in args and args[-2] == "/dev/vdb",
+          "no proprietary drivers, the disk last: %r" % args)
     secrets = open(os.path.join(out, "secrets")).read()
     check("--root-password-file 600 pw1\n" in secrets and "--user-password-file 600 pw1\n" in secrets,
           "the password files: %r" % secrets)
     sdir = open(os.path.join(out, "secretdir")).read().strip()
     check(not os.path.exists(sdir), "the password files are removed: " + sdir)
     log = open("/tmp/cleanlinux-install.log").read()
-    check("cleanlinux-setup: " in log and "==> Installing burn" in log, "the log: " + log)
+    check("cleanlinux-setup: " in log and "==> Copied 100%" in log, "the log: " + log)
     check("pw1" not in log, "no password in the log")
     t.send(RIGHT, RIGHT, ENTER)
     status = t.finish()
@@ -366,7 +391,7 @@ def test_english(binary, tmp, data):
 
 
 def test_russian(binary, tmp, data):
-    """Russian, encryption, root's own password, the installer fails, ASCII lines, a resize"""
+    """Russian, the console only, the installer fails, ASCII lines, a resize"""
     out = os.path.join(tmp, "ru")
     os.makedirs(out)
     with open(os.path.join(tmp, "installer"), "w") as f:
@@ -374,10 +399,10 @@ def test_russian(binary, tmp, data):
     t = Tui([binary, "--dry-run", "--ascii"], base_env(tmp, data, {"FAKE_FAIL": "3"}), rows=24, cols=80)
     t.wait_for("Language . Язык", "> English")
     t.send(DOWN, ENTER)
-    scr = t.wait_for("Добро пожаловать", "Установка CleanLinux (пробный запуск)", "Далее", "шаг 2 из 10")
+    scr = t.wait_for("Раскладка клавиатуры", "> Русская", "Alt+Shift", "Установка CleanLinux (пробный запуск)",
+                     "шаг 2 из 8")
     check(not re.search("[\u2500-\u257f]", scr), "--ascii: no box drawing", scr)
-    t.send(ENTER)
-    scr = t.wait_for("Раскладка клавиатуры", "> Русская", "Alt+Shift")
+    check("Клавиатура" not in scr, "no list of steps at 80x24", scr)
     t.send(ENTER)
     # the regions in Russian are found by the Latin names too
     t.wait_for("Часовой пояс", "Европа", "Europe")
@@ -386,26 +411,13 @@ def test_russian(binary, tmp, data):
     t.send(ENTER)
     t.wait_for("Часовой пояс: Европа")
     t.resize(30, 100)
-    scr = t.wait_for("Часовой пояс: Европа", "Moscow")
+    scr = t.wait_for("Часовой пояс: Европа", "Moscow", "+ Язык", "+ Клавиатура", "> Часовой пояс", "4 Диск")
     check(len(scr.split("\n")) == 30 and any(len(l) > 80 for l in scr.split("\n")), "redrawn at 100x30", scr)
     t.type("berl")
     t.send(ENTER)
     t.wait_for("Диск", "/dev/vdb")
     t.send(ENTER)
-    t.wait_for("Шифрование", "Зашифровать диск")
-    t.send(DOWN, ENTER)
-    t.wait_for("Пароль шифрования", "Повтор")
-    t.type("short")
-    t.send(ENTER)
-    t.type("short")
-    t.send(ENTER)
-    t.wait_for("Не короче 8 символов.")
-    t.send(CTRL_U)
-    t.type("correct horse")
-    t.send(TAB, CTRL_U)
-    t.type("correct horse")
-    t.send(ENTER)
-    t.wait_for("Компьютер и пользователь")
+    t.wait_for("Компьютер и пользователь", "Администратор root получит тот же пароль")
     t.send(TAB)
     t.type("bob")
     t.send(TAB)
@@ -413,24 +425,22 @@ def test_russian(binary, tmp, data):
     t.send(TAB)
     t.type("secret")
     t.send(ENTER)
-    t.wait_for("Администратор (root)", "Тот же пароль, что у bob")
-    t.send(DOWN, ENTER)
-    t.wait_for("Пароль root")
-    t.type("rootpw")
-    t.send(TAB)
-    t.type("rootpw")
+    t.wait_for("Система", "Рабочий стол", "< labwc", "лёгкий рабочий стол Wayland", "Проприетарные драйверы",
+               "< включены")
+    t.send(RIGHT)
+    t.wait_for("нет (консоль)", "Только текстовая консоль")
     t.send(ENTER)
-    scr = t.wait_for("Всё готово к установке", "да (LUKS2)", "Europe/Berlin", "отдельный пароль",
+    scr = t.wait_for("Всё готово к установке", "Europe/Berlin", "нет (консоль)", "включены",
                      "ВСЕ ДАННЫЕ НА /dev/vdb БУДУТ СТЁРТЫ.")
     t.send(ENTER, RIGHT, ENTER)
     scr = t.wait_for("Установка не удалась", "код 3", "error: something broke", timeout=20)
     args = open(os.path.join(out, "args")).read().split("\n")
-    check("--encrypt" in args and "--encrypt-password-file" in args, "encryption: %r" % args)
+    check("--spin" not in args and "--no-nonfree" not in args and "--encrypt" not in args,
+          "the console, the drivers: %r" % args)
     check(args[args.index("--keymap") + 1] == "ruwin_alt_sh-UTF-8" and args[args.index("--font") + 1] == "latarcyrheb-sun16",
           "the Russian keymap and a Cyrillic font: %r" % args)
     secrets = open(os.path.join(out, "secrets")).read()
-    for want in ("--root-password-file 600 rootpw", "--user-password-file 600 secret",
-                 "--encrypt-password-file 600 correct horse"):
+    for want in ("--root-password-file 600 secret", "--user-password-file 600 secret"):
         check(want in secrets, "%r in %r" % (want, secrets))
     t.send(ENTER)  # back to the summary
     t.wait_for("Всё готово к установке")
@@ -440,14 +450,16 @@ def test_russian(binary, tmp, data):
     status = t.finish()
     check(status == 0, "exit status %s" % status)
     check("снова запустить установщик".encode() in t.raw, "the last words in Russian")
-    print("setup: Russian, encryption, a failure: OK")
+    print("setup: Russian, the console only, a failure: OK")
 
 
 def test_misc(binary, tmp, data):
-    """no disk; --help; --auto off the main console; a terminal that is too small"""
-    t = Tui([binary, "--dry-run", "--lang", "en"], base_env(tmp, data, {"CLEANLINUX_SETUP_DISKS": "sdz=1024=Tiny"}))
+    """no disk, no live medium; --help; --auto off the main console; a terminal that is too small"""
+    env = base_env(tmp, data, {"CLEANLINUX_SETUP_DISKS": "sdz=1024=Tiny",
+                               "CLEANLINUX_SETUP_MEDIUM": os.path.join(tmp, "nothing")})
+    t = Tui([binary, "--dry-run", "--lang", "en"], env)
     t.wait_for("Language · Язык")
-    t.send(ENTER, ENTER, ENTER)
+    t.send(ENTER, ENTER)
     t.wait_for("Time zone")
     t.send(ENTER)  # UTC: the default here
     scr = t.wait_for("No disk to install on", "▶ Look again")
@@ -482,6 +494,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         data = os.path.join(tmp, "data")
         make_data(data)
+        make_medium(os.path.join(tmp, "medium"))
         for test in (test_english, test_russian, test_misc):
             test(binary, tmp, data)
     print("setup: OK")

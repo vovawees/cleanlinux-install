@@ -52,29 +52,34 @@ char *conf_get(const char *text, const char *key);
 char *conf_unset(const char *text, const char *key);
 /* the profile line of `burn profile detect`; NULL without one */
 char *detected_profile(const char *out);
-/* the kernel command line of the new system: ROOT is the value of root= (PARTUUID=… or a device);
- * with LUKS_UUID the initramfs first opens that LUKS container (rd.luks.uuid=) */
-char *cmdline_text(const char *root, const char *luks_uuid, const char *rootflags, const char *extra);
-/* the LUKS UUID of a dm-crypt mapping from its device-mapper UUID ("CRYPT-LUKS2-<32 hex>-<name>",
- * /sys/class/block/dm-N/dm/uuid); NULL when the mapping is not a LUKS container */
-char *luks_uuid_of_dm(const char *dm_uuid);
-/* the mapping the initramfs of the new system opens it as: /dev/mapper/luks-<UUID> */
-char *luks_mapper(const char *luks_uuid);
+/* the kernel command line of the new system: ROOT is the value of root= (PARTUUID=… or a device) */
+char *cmdline_text(const char *root, const char *rootflags, const char *extra);
 bool valid_hostname(const char *s);
 bool valid_username(const char *s);
 bool valid_zone(const char *s);         /* Europe/Moscow, America/Argentina/Buenos_Aires, UTC */
 bool valid_console_name(const char *s); /* a keymap or console font of kbd: us, ruwin_alt_sh-UTF-8 */
 char *size_text(uint64_t bytes);
 
+/* copy.c: system trees copied as overlayfs shows its layers: a whiteout (a character device 0:0)
+ * removes what is below, an opaque directory (trusted.overlay.opaque=y) replaces it */
+struct tree_size {
+	uint64_t bytes, entries; /* bytes of the regular files, every entry */
+};
+void tree_measure(const char *src, struct tree_size *t);
+typedef void (*tree_progress)(uint64_t bytes, uint64_t entries, void *ctx);
+/* the contents of SRC into DST, merged with what is there: owners, modes, times, extended
+ * attributes, hard links and device nodes kept; other filesystems below SRC are not entered.
+ * The number of entries that failed (each reported) */
+int tree_copy(const char *src, const char *dst, tree_progress cb, void *ctx);
+
 /* the progress of an installation, from the lines cleanlinux-install (and burn clone) print */
 enum {
 	STEP_NONE,
 	STEP_DISK,
 	STEP_PARTITION,
-	STEP_ENCRYPT,
 	STEP_FORMAT,
 	STEP_MOUNT,
-	STEP_PACKAGES,
+	STEP_PACKAGES, /* the copy of the system (or burn clone) */
 	STEP_CONFIG,
 	STEP_USERS,
 	STEP_BOOT,
@@ -82,8 +87,8 @@ enum {
 	STEP_DONE,
 };
 struct progress {
-	int percent, step, pkgs, pkgs_done;
-	char pkg[64]; /* the package being installed */
+	int percent, step, pkgs, pkgs_done, copied; /* copied: percent of the system copied */
+	char pkg[64]; /* the package being installed, or the amount copied */
 };
 void progress_line(struct progress *p, const char *line);
 /* LINE without terminal escapes (colors) and trailing blanks, tabs as spaces, in OUT */
@@ -105,7 +110,6 @@ char *disk_part_dev(const struct disk *d, unsigned n, int wait_ms); /* /dev/vdb1
 uint64_t sysfs_u64(const char *dir, const char *file);
 char *partuuid_of(const char *dev, void *ctx); /* "PARTUUID=…" via libblkid, or NULL */
 char *fstype_of(const char *dev);
-char *luks_uuid_of(const char *dev); /* the LUKS UUID when DEV is an open LUKS container (dm-crypt) */
 int btrfs_subvol_create(const char *parent, const char *name);
 int efi_boot_entry(const struct disk *d, unsigned partno, const char *partuuid, const char *loader, const char *desc);
 char *hash_password(const char *pw);

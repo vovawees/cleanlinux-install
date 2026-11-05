@@ -231,6 +231,7 @@ static uint32_t stand_in(uint32_t cp)
 	case 0x2191: return '^';
 	case 0x2193: return 'v';
 	case 0x2022: case 0x25cf: return '*';
+	case 0x221a: return '+';
 	case 0x25cb: return 'o';
 	case 0x2013: case 0x2014: case 0x2212: return '-';
 	case 0x2026: case 0x00b7: return '.';
@@ -258,16 +259,23 @@ static cell *cur, *prev;
 static int alloc_rows, alloc_cols, cur_y = -1, cur_x;
 static bool full;
 
+/* 16 colours, which every terminal and the Linux console show alike: black text on the light
+ * grey (47) panel, white on blue (44) and black on cyan (46) for what stands out */
 static const char *const sgr_color[A_COUNT] = {
-	[A_NORMAL] = "\033[0m",		[A_BOLD] = "\033[0;1m",		[A_DIM] = "\033[0;2m",
-	[A_TITLE] = "\033[0;1;37;44m",	[A_SEL] = "\033[0;30;46m",	[A_FIELD] = "\033[0;30;47m",
-	[A_FOCUS] = "\033[0;1;37;44m", [A_WARN] = "\033[0;1;31m",	[A_OK] = "\033[0;1;32m",
-	[A_BAR] = "\033[0;1;36m",
+	[A_NORMAL] = "\033[0;30;47m",	  [A_BOLD] = "\033[0;34;47m",	     [A_DIM] = "\033[0;1;30;47m",
+	[A_TITLE] = "\033[0;30;46m",	  [A_SEL] = "\033[0;1;37;44m",	     [A_FIELD] = "\033[0;30;46m",
+	[A_FOCUS] = "\033[0;1;37;44m",	  [A_WARN] = "\033[0;31;47m",	     [A_OK] = "\033[0;32;47m",
+	[A_BAR] = "\033[0;34;47m",	  [A_BG] = "\033[0;37;44m",	     [A_SHADOW] = "\033[0;30;40m",
+	[A_LIGHT] = "\033[0;1;37;47m",	  [A_HEAD] = "\033[0;34;47m",	     [A_HINT] = "\033[0;30;46m",
+	[A_KEY] = "\033[0;1;37;46m",	  [A_STEP] = "\033[0;37;44m",	     [A_STEP_DONE] = "\033[0;36;44m",
+	[A_STEP_CUR] = "\033[0;30;46m", [A_BUTTON] = "\033[0;30;47m",
 };
 static const char *const sgr_mono[A_COUNT] = {
-	[A_NORMAL] = "\033[0m", [A_BOLD] = "\033[0;1m",	 [A_DIM] = "\033[0m",	 [A_TITLE] = "\033[0;7m",
-	[A_SEL] = "\033[0;7m",	[A_FIELD] = "\033[0;4m", [A_FOCUS] = "\033[0;7m", [A_WARN] = "\033[0;1m",
-	[A_OK] = "\033[0;1m",	[A_BAR] = "\033[0;1m",
+	[A_NORMAL] = "\033[0m",	 [A_BOLD] = "\033[0;1m",	  [A_DIM] = "\033[0m",	   [A_TITLE] = "\033[0;7m",
+	[A_SEL] = "\033[0;7m",	 [A_FIELD] = "\033[0;4m",	  [A_FOCUS] = "\033[0;7m",   [A_WARN] = "\033[0;1m",
+	[A_OK] = "\033[0;1m",	 [A_BAR] = "\033[0;1m",	  [A_BG] = "\033[0m",	   [A_SHADOW] = "\033[0m",
+	[A_LIGHT] = "\033[0m",	 [A_HEAD] = "\033[0;1m",	  [A_HINT] = "\033[0;7m",   [A_KEY] = "\033[0;1;7m",
+	[A_STEP] = "\033[0m",	 [A_STEP_DONE] = "\033[0m", [A_STEP_CUR] = "\033[0;7m", [A_BUTTON] = "\033[0m",
 };
 
 static void write_all(const char *s, size_t n)
@@ -582,7 +590,7 @@ void tui_clear(void)
 {
 	size_t n = (size_t)tui_rows * (size_t)tui_cols;
 	for (size_t i = 0; i < n; i++)
-		cur[i] = CELL(' ', A_NORMAL);
+		cur[i] = CELL(' ', A_BG);
 	cur_y = -1;
 }
 
@@ -631,6 +639,45 @@ void tui_box(int y, int x, int h, int w, int attr)
 		tui_putc(y + i, x, attr, 0x2502);
 		tui_putc(y + i, x + w - 1, attr, 0x2502);
 	}
+}
+
+void tui_panel(int y, int x, int h, int w)
+{
+	if (h < 2 || w < 2)
+		return;
+	for (int i = 0; i < h; i++)
+		tui_fill(y + i, x, w, A_NORMAL, ' ');
+	/* lit from the top left: the top and left edges bright, the others dark */
+	tui_putc(y, x, A_LIGHT, 0x250c);
+	tui_fill(y, x + 1, w - 2, A_LIGHT, 0x2500);
+	tui_putc(y, x + w - 1, A_NORMAL, 0x2510);
+	for (int i = 1; i < h - 1; i++) {
+		tui_putc(y + i, x, A_LIGHT, 0x2502);
+		tui_putc(y + i, x + w - 1, A_NORMAL, 0x2502);
+	}
+	tui_putc(y + h - 1, x, A_LIGHT, 0x2514);
+	tui_fill(y + h - 1, x + 1, w - 2, A_NORMAL, 0x2500);
+	tui_putc(y + h - 1, x + w - 1, A_NORMAL, 0x2518);
+	/* the shadow: two columns to the right, a row below */
+	for (int i = 1; i <= h; i++)
+		tui_fill(y + i, x + w, 2, A_SHADOW, ' ');
+	tui_fill(y + h, x + 2, w, A_SHADOW, ' ');
+}
+
+int tui_put_marked(int y, int x, int attr, const char *text, int maxw)
+{
+	int n = 0;
+	bool key = false;
+	for (const char *s = text; *s && (maxw < 0 || n < maxw);) {
+		if (*s == '*') {
+			key = !key;
+			s++;
+			continue;
+		}
+		tui_putc(y, x + n, key ? A_KEY : attr, utf8_next(&s));
+		n++;
+	}
+	return n;
 }
 
 void tui_cursor(int y, int x)

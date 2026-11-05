@@ -11,7 +11,7 @@ fail() {
 }
 # the tools of a CleanLinux system, as stand-ins
 mkdir -p "$tmp/bin"
-for t in burn cleanlinux-boot sfdisk mkfs.vfat mkfs.btrfs useradd udevadm cryptsetup; do
+for t in burn cleanlinux-boot sfdisk mkfs.vfat mkfs.btrfs useradd udevadm; do
 	printf '#!/bin/sh\necho "%s $*" >>"%s/ran"\n' "$t" "$tmp" >"$tmp/bin/$t"
 	chmod 755 "$tmp/bin/$t"
 done
@@ -38,7 +38,7 @@ grep -q 'the running system itself' "$tmp/err" || fail "target / message"
 if ci -n "$tmp/bin/burn" 2>"$tmp/err"; then fail "a file is not a disk"; fi
 grep -q 'is not a block device' "$tmp/err" || fail "block device message: $(cat "$tmp/err")"
 if env PATH=/nonexistent "$BIN" -n /dev/null 2>"$tmp/err"; then fail "missing tools"; fi
-grep -q 'burn is missing' "$tmp/err" || fail "missing tool message: $(cat "$tmp/err")"
+grep -q 'cleanlinux-boot is missing' "$tmp/err" || fail "missing tool message: $(cat "$tmp/err")"
 if [ "$(id -u)" != 0 ]; then
 	if ci /dev/null 2>"$tmp/err"; then fail "not root"; fi
 	grep -q 'run it as root' "$tmp/err" || fail "root message"
@@ -46,11 +46,8 @@ fi
 mkdir -p "$tmp/notmounted"
 if ci -n -t "$tmp/notmounted" 2>"$tmp/err"; then fail "target not mounted"; fi
 grep -q 'is not a mount point' "$tmp/err" || fail "mount point message: $(cat "$tmp/err")"
-if ci -n --encrypt-password-file x /dev/null 2>"$tmp/err"; then fail "a passphrase without --encrypt"; fi
-grep -q 'needs --encrypt' "$tmp/err" || fail "passphrase message: $(cat "$tmp/err")"
-if ci -n --encrypt -t "$tmp/notmounted" 2>"$tmp/err"; then fail "--encrypt without a disk"; fi
-grep -q 'encrypt formats DISK' "$tmp/err" || fail "--encrypt message: $(cat "$tmp/err")"
-if ci -n --root-password-file - --encrypt --encrypt-password-file - /dev/null 2>"$tmp/err"; then
+if ci -n --encrypt /dev/null 2>/dev/null; then fail "--encrypt is gone (no encryption in the base system)"; fi
+if ci -n --root-password-file - --user anna --user-password-file - /dev/null 2>"$tmp/err"; then
 	fail "two passwords from stdin"
 fi
 grep -q 'only one password can come from stdin' "$tmp/err" || fail "stdin message: $(cat "$tmp/err")"
@@ -60,6 +57,23 @@ if ci -n --keymap 'us/../x' /dev/null 2>"$tmp/err"; then fail "bad keymap"; fi
 grep -q 'keymap us/../x' "$tmp/err" || fail "keymap message: $(cat "$tmp/err")"
 if ci -n --font '-x' /dev/null 2>"$tmp/err"; then fail "bad font"; fi
 grep -q 'font -x' "$tmp/err" || fail "font message: $(cat "$tmp/err")"
+if ci -n --spin 'a/b' /dev/null 2>"$tmp/err"; then fail "bad spin"; fi
+grep -q 'spin a/b: the name of a spin' "$tmp/err" || fail "spin message: $(cat "$tmp/err")"
+# a live medium: the system tree @ with the layers next to it, as cleanlinux-boot mounts it
+m=$tmp/medium
+mkdir -p "$m/@/usr/bin" "$m/@/etc/burn" "$m/nonfree/var/lib/burn/installed/steamdeck-dsp" "$m/spins/labwc/usr/bin"
+printf 'PROFILE=generic-x86_64\nFIRMWARE="amdgpu/ i915/"\n' >"$m/@/etc/burn/burn.conf"
+echo labwc >"$m/spins/labwc/usr/bin/labwc"
+if [ ! -d /run/cleanlinux/live/medium/@/usr ]; then
+	if ci -n --spin labwc /dev/null 2>"$tmp/err"; then fail "a spin without a live medium"; fi
+	grep -q 'spins come from the live medium' "$tmp/err" || fail "spin without a medium: $(cat "$tmp/err")"
+fi
+if ci -n --source "$tmp/notmounted" /dev/null 2>"$tmp/err"; then fail "a source without a system"; fi
+grep -q 'has no system' "$tmp/err" || fail "source message: $(cat "$tmp/err")"
+if ci -n --clone --source "$m/@" /dev/null 2>"$tmp/err"; then fail "--clone and --source"; fi
+grep -q 'one of them' "$tmp/err" || fail "clone and source message: $(cat "$tmp/err")"
+if ci -n --clone --spin labwc /dev/null 2>"$tmp/err"; then fail "--clone and --spin"; fi
+grep -q 'spin needs the copy of a live medium' "$tmp/err" || fail "clone and spin message: $(cat "$tmp/err")"
 
 # a dry run on a real disk of this machine (read only): the whole plan, nothing runs
 disk=
@@ -78,7 +92,8 @@ if [ -n "$disk" ]; then
 		'subvol=@home,compress=zstd:1,noatime 0 0' 'umask=0077,noatime 0 2' 'tmpfs /tmp tmpfs nosuid,nodev 0 0' \
 		"useradd -R $tmp/target -m -U -G wheel -s /bin/bash anna" "cleanlinux-boot --root $tmp/target kernel sync" \
 		'burn profile detect: steam-deck (the running system builds for ' \
-		'--profile steam-deck makes it the profile of the new system' 'Dry run: nothing was changed'; do
+		'--profile steam-deck makes it the profile of the new system' 'Dry run: nothing was changed' \
+		'proprietary drivers allowed (ALLOW_NONFREE=1)'; do
 		grep -qF -- "$want" "$tmp/out" || fail "dry run: no '$want' in: $(cat "$tmp/out")"
 	done
 	[ ! -e "$tmp/ran" ] || fail "dry run ran: $(cat "$tmp/ran")"
@@ -92,19 +107,23 @@ if [ -n "$disk" ]; then
 		grep -qF -- "$want" "$tmp/out" || fail "time zone dry run: no '$want' in: $(cat "$tmp/out")"
 	done
 	[ ! -e "$tmp/ran" ] || fail "time zone dry run ran: $(cat "$tmp/ran")"
-	# the same with the root in LUKS2
-	ci -n -y -t "$tmp/target" --encrypt -p "base linux" "$disk" >"$tmp/out" 2>&1 ||
-		fail "encrypted dry run on $disk: $(cat "$tmp/out")"
-	for want in 'LUKS2 (btrfs) root' 'cryptsetup luksFormat --batch-mode --type luks2 --uuid ' \
-		'--label CleanLinux --key-file - ' 'cryptsetup open --type luks2 --key-file - ' \
-		'mkfs.btrfs -f -q -L CleanLinux /dev/mapper/luks-' 'rd.luks.uuid=' ' root=/dev/mapper/luks-' \
-		"$tmp/target/etc/cleanlinux/initramfs.d/50-luks-root.conf" 'modules=dm-crypt' 'files=/usr/bin/cryptsetup' \
-		"burn -r $tmp/target -y clone / base linux cryptsetup" ' /home btrfs subvol=@home,compress=zstd:1,noatime 0 0'; do
-		grep -qF -- "$want" "$tmp/out" || fail "encrypted dry run: no '$want' in: $(cat "$tmp/out")"
+	# the copy of a live medium: the system, the proprietary drivers, a spin
+	ci -n -y -t "$tmp/target" --source "$m/@" --spin labwc "$disk" >"$tmp/out" 2>&1 ||
+		fail "copy dry run on $disk: $(cat "$tmp/out")"
+	for want in "the system: $m/@" "the proprietary drivers: $m/nonfree" "the spin labwc: $m/spins/labwc" \
+		'Copying the system (' 'proprietary drivers allowed (ALLOW_NONFREE=1)' 'rootflags=subvol=@ rootwait ro' \
+		"cleanlinux-boot --root $tmp/target kernel sync"; do
+		grep -qF -- "$want" "$tmp/out" || fail "copy dry run: no '$want' in: $(cat "$tmp/out")"
 	done
-	grep -q '^ */dev/mapper/luks-[0-9a-f-]* / btrfs ' "$tmp/out" || fail "encrypted dry run: fstab: $(cat "$tmp/out")"
-	if grep -q 'dry-run' "$tmp/out"; then fail "encrypted dry run shows the passphrase: $(cat "$tmp/out")"; fi
-	[ ! -e "$tmp/ran" ] || fail "encrypted dry run ran: $(cat "$tmp/ran")"
+	if grep -q 'burn -r' "$tmp/out"; then fail "copy dry run installs packages: $(cat "$tmp/out")"; fi
+	ci -n -y -t "$tmp/target" --source "$m/@" --no-nonfree "$disk" >"$tmp/out" 2>&1 ||
+		fail "free copy dry run on $disk: $(cat "$tmp/out")"
+	grep -qF 'no proprietary packages (ALLOW_NONFREE=0)' "$tmp/out" || fail "--no-nonfree: $(cat "$tmp/out")"
+	if grep -qF 'the proprietary drivers:' "$tmp/out"; then fail "--no-nonfree copies them: $(cat "$tmp/out")"; fi
+	if ci -n -y -t "$tmp/target" --source "$m/@" --spin xfce "$disk" >"$tmp/out" 2>&1; then fail "a spin the medium lacks"; fi
+	grep -qF 'the medium has no such spin' "$tmp/out" || fail "missing spin: $(cat "$tmp/out")"
+	[ ! -e "$tmp/ran" ] || fail "copy dry run ran: $(cat "$tmp/ran")"
+	[ ! -e "$tmp/target" ] || fail "copy dry run created the target"
 else
 	echo "cli: no disk for the dry run, skipped"
 fi
