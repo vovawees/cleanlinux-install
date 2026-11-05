@@ -206,7 +206,12 @@ def make_medium(root):
     with open(os.path.join(spin, "spin.conf"), "w") as f:
         f.write('SPIN_NAME=labwc\nSPIN_DESC="labwc: a light Wayland desktop with a panel"\n'
                 'SPIN_DESC_RU="labwc: лёгкий рабочий стол Wayland с панелью"\n')
-    os.makedirs(os.path.join(root, "nonfree/var/lib/burn/installed/steamdeck-dsp"))
+    # the drivers and a free library they brought along, which the screen does not list
+    db = os.path.join(root, "nonfree/var/lib/burn/installed")
+    for name, deps in (("steamdeck-dsp", "glibc libdsp"), ("libdsp", "glibc")):
+        os.makedirs(os.path.join(db, name))
+        with open(os.path.join(db, name, "meta"), "w") as f:
+            f.write(f"name={name}\nversion=1\ndepends={deps}\n")
     os.makedirs(os.path.join(root, "@/usr"))
 
 

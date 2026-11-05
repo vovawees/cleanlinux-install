@@ -1060,6 +1060,29 @@ static strv dir_names(const char *dir)
 	return v;
 }
 
+/* the proprietary packages of the medium: those of its layer nonfree/ (the burn database DB) that
+ * no other package there depends on, the drivers and not the free libraries they brought along */
+static strv nonfree_top(const char *db)
+{
+	strv names = dir_names(db), deps = STRV_INIT, top = STRV_INIT;
+	for (size_t i = 0; i < names.n; i++) {
+		char *p = xasprintf("%s/%s/meta", db, names.v[i]);
+		char *meta = read_file(p, NULL);
+		char *d = meta ? conf_get(meta, "depends") : NULL;
+		if (d)
+			strv_split(&deps, d);
+		free(d);
+		free(meta);
+		free(p);
+	}
+	for (size_t i = 0; i < names.n; i++)
+		if (!strv_contains(&deps, names.v[i]))
+			strv_push(&top, names.v[i]);
+	strv_free(&deps);
+	strv_free(&names);
+	return top;
+}
+
 static char *empty_null(char *s)
 {
 	if (s && !*s) {
@@ -1088,7 +1111,7 @@ static void load_medium(void)
 	strv_free(&names);
 	free(dir);
 	dir = xasprintf("%s/nonfree/var/lib/burn/installed", medium);
-	nonfree_pkgs = dir_names(dir);
+	nonfree_pkgs = nonfree_top(dir);
 	free(dir);
 	/* the spin the live system was started with (its boot entry), else the first one */
 	st.spin = nspins ? 0 : -1;
