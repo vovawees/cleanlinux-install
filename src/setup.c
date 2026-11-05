@@ -323,6 +323,11 @@ static char *disk_model(const char *sys)
 	char *v = sys_line(sys, "device/vendor"), *m = sys_line(sys, "device/model");
 	if (!m)
 		m = sys_line(sys, "device/name"); /* SD cards and eMMC */
+	if (v && !strncmp(v, "0x", 2)) {
+		/* a number, not a name: the PCI vendor of a virtio disk (0x1af4) */
+		free(v);
+		v = NULL;
+	}
 	char *out;
 	if (v && m && strcmp(v, "ATA") && strncasecmp(m, v, strlen(v)))
 		out = xasprintf("%s %s", v, m);
