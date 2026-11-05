@@ -252,6 +252,23 @@ static bool dir_has_entries(const char *path)
 	return any;
 }
 
+/* the disk under a line of mountinfo: its device number, or else the source of the mount (btrfs
+ * gives every filesystem and subvolume an anonymous device number, 0:N, not its partition's) */
+static char *mount_disk(const char *line, unsigned maj, unsigned min)
+{
+	char *d = disk_of(maj, min);
+	const char *sep = strstr(line, " - ");
+	char src[4096];
+	if (d || !sep || sscanf(sep + 3, "%*s %4095s", src) != 1 || !str_prefix(src, "/dev/"))
+		return d;
+	char *real = mountinfo_unescape(src);
+	struct stat st;
+	if (stat(real, &st) == 0 && S_ISBLK(st.st_mode))
+		d = disk_of(major(st.st_rdev), minor(st.st_rdev));
+	free(real);
+	return d;
+}
+
 /* the disks in use: something mounted from them, swap, a device-mapper (LUKS, LVM) on top; the
  * medium of the live system apart */
 static void scan_busy(strv *busy, strv *medium)
@@ -262,7 +279,7 @@ static void scan_busy(strv *busy, strv *medium)
 		char dir[4096];
 		if (sscanf(l, "%*u %*u %u:%u %*s %4095s", &maj, &min, dir) != 3)
 			continue;
-		char *d = disk_of(maj, min);
+		char *d = mount_disk(l, maj, min);
 		if (!d)
 			continue;
 		char *real = mountinfo_unescape(dir);
