@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/klog.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -285,11 +286,31 @@ static void write_all(const char *s, size_t n)
 
 static const char leave_seq[] = "\033[0m\033[2J\033[H\033[?25h\033[?1049l";
 
+/* on a VT: the kernel's console log level before the screens (they keep it at 1, alerts only,
+ * so that driver messages do not scribble over them) */
+static int saved_loglevel = -1;
+static bool on_vt;
+
+static void quiet_kernel(void)
+{
+	FILE *f = fopen("/proc/sys/kernel/printk", "r");
+	int level;
+	if (!f)
+		return;
+	if (fscanf(f, "%d", &level) == 1 && level > 1 && klogctl(8 /* SYSLOG_ACTION_CONSOLE_LEVEL */, NULL, 1) == 0)
+		saved_loglevel = level;
+	fclose(f);
+}
+
 static void restore(void)
 {
 	if (raw_on) {
 		tcsetattr(0, TCSAFLUSH, &saved);
 		raw_on = false;
+	}
+	if (saved_loglevel > 0) {
+		klogctl(8, NULL, saved_loglevel);
+		saved_loglevel = -1;
 	}
 }
 
@@ -301,6 +322,8 @@ static void on_fatal(int sig)
 			/* nothing more to do */
 		}
 	}
+	if (saved_loglevel > 0)
+		klogctl(8, NULL, saved_loglevel);
 	signal(sig, SIG_DFL);
 	raise(sig);
 }
@@ -362,9 +385,12 @@ void tui_begin(bool ascii)
 	/* serial terminals (agetty's vt220) are not trusted with UTF-8 box drawing; the VT says
 	 * what its font has */
 	tui_ascii = ascii || !term || !strcmp(term, "dumb") || !strncmp(term, "vt1", 3) || !strncmp(term, "vt2", 3);
-	if (tui_is_vt()) {
+	on_vt = tui_is_vt();
+	if (on_vt) {
 		tui_ascii = ascii;
 		tui_reload_font();
+		if (geteuid() == 0)
+			quiet_kernel();
 	}
 	if (tcgetattr(0, &saved) < 0)
 		die("cleanlinux-setup needs a terminal");
@@ -515,13 +541,21 @@ int tui_key(int timeout_ms)
 				break;
 		}
 		struct pollfd p = {0, POLLIN, 0};
-		int r = poll(&p, 1, klen ? 60 : timeout_ms);
+		/* waiting for a key on a VT: the whole screen again every 2 s, over what the services
+		 * of the booting live system print on the console meanwhile */
+		bool repaint = on_vt && timeout_ms < 0 && !klen;
+		int r = poll(&p, 1, klen ? 60 : repaint ? 2000 : timeout_ms);
 		if (r < 0) {
 			if (errno == EINTR)
 				continue;
 			return K_EOF;
 		}
 		if (r == 0) {
+			if (repaint) {
+				full = true;
+				tui_flush();
+				continue;
+			}
 			if (!klen)
 				return K_NONE;
 			bool took;
