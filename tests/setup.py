@@ -234,8 +234,8 @@ step "Disk /dev/vdb"
 step "Partitioning /dev/vdb"
 step "Formatting"
 step "Mounting"
-step "Copying the system (2.4 GiB in 51234 files, nothing is built or downloaded)"
-for p in 10 50 100; do echo "==> Copied $p%% ($p MiB of 2.4 GiB)"; sleep 0.3; done
+step "Copying the system (1.2 GiB in 31207 files, nothing is built or downloaded)"
+for c in "10 123 MiB" "50 614 MiB" "100 1.2 GiB"; do set -- $c; echo "==> Copied $1%% ($2 $3 of 1.2 GiB)"; sleep 0.3; done
 if [ -n "${FAKE_FAIL:-}" ]; then
 	echo "error: something broke"
 	exit "$FAKE_FAIL"
@@ -373,7 +373,7 @@ def test_english(binary, tmp, data):
     t.send(ENTER, RIGHT, ENTER)
     scr = t.wait_for("Installing", "Copying the system: ", ":: Mounting", "step 8 of 8", timeout=15)
     check("[1;36m" not in scr, "the log tail without colors", scr)
-    t.wait_for("Copying the system: 50% · 50 MiB of 2.4 GiB", timeout=15)
+    t.wait_for("Copying the system: 50% · 614 MiB of 1.2 GiB", timeout=15)
     scr = t.wait_for("CleanLinux is installed", "Remove the USB stick", "The desktop (labwc) starts",
                      "Exit to the console", "√ Installation", timeout=20)
     args = open(os.path.join(out, "args")).read().split("\n")
